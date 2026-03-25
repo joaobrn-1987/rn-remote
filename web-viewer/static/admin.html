@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RemoteLink - Painel Admin</title>
+    <style>
+        :root{--bg:#0a0e17;--bg2:#111827;--card:#1a2332;--input:#0d1321;--border:#1e3048;--text:#e2e8f0;--dim:#64748b;--bright:#f8fafc;--accent:#3b82f6;--success:#10b981;--warn:#f59e0b;--danger:#ef4444}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+        .top{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:56px;background:var(--bg2);border-bottom:1px solid var(--border)}
+        .top h1{font-size:18px;color:var(--accent)}.top h1 span{color:var(--dim);font-weight:400;font-size:14px}
+        .top .user{font-size:13px;color:var(--dim)}
+        .grid{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 56px)}
+        .sidebar{background:var(--bg2);border-right:1px solid var(--border);padding:16px 0}
+        .sidebar a{display:block;padding:10px 24px;color:var(--dim);text-decoration:none;font-size:14px;transition:all .15s;cursor:pointer}
+        .sidebar a:hover,.sidebar a.active{color:var(--bright);background:rgba(255,255,255,.04)}
+        .sidebar a.active{border-left:3px solid var(--accent);color:var(--accent)}
+        .content{padding:24px;overflow-y:auto}
+        .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+        .stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px}
+        .stat-card .label{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+        .stat-card .value{font-size:28px;font-weight:700;color:var(--bright);margin-top:4px}
+        .stat-card .sub{font-size:12px;color:var(--dim);margin-top:2px}
+        table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+        th{background:var(--bg2);padding:10px 16px;text-align:left;font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:1px}
+        td{padding:10px 16px;border-top:1px solid var(--border);font-size:13px}
+        .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+        .badge-online{background:rgba(16,185,129,.15);color:var(--success)}
+        .badge-offline{background:rgba(100,116,139,.15);color:var(--dim)}
+        .badge-active{background:rgba(59,130,246,.15);color:var(--accent)}
+        .section{display:none}.section.active{display:block}
+        .section h2{font-size:18px;margin-bottom:16px;color:var(--bright)}
+        .btn{padding:6px 12px;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:600}
+        .btn-danger{background:var(--danger);color:#fff}
+        .btn-accent{background:var(--accent);color:#fff}
+        .btn-warn{background:var(--warn);color:#000}
+        .login-overlay{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:999}
+        .login-box{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:40px;width:380px}
+        .login-box h2{margin-bottom:16px;color:var(--bright)}
+        .login-box input{width:100%;padding:10px;background:var(--input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px;outline:none}
+        .login-box button{width:100%;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer}
+        .login-error{color:var(--danger);font-size:13px;margin-top:8px;display:none}
+        /* Modal */
+        .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;z-index:500}
+        .modal-bg.open{display:flex}
+        .modal{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:32px;width:440px;max-width:95vw}
+        .modal h3{margin-bottom:20px;color:var(--bright);font-size:16px}
+        .modal label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
+        .modal input,.modal select{width:100%;padding:9px 12px;background:var(--input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;margin-bottom:14px;outline:none}
+        .modal-footer{display:flex;gap:8px;justify-content:flex-end;margin-top:4px}
+        .modal-err{color:var(--danger);font-size:12px;margin-bottom:10px;display:none}
+        ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+        /* Profile dropdown */
+        .profile-wrap{position:relative}
+        .profile-btn{display:flex;align-items:center;gap:8px;cursor:pointer;padding:6px 12px;border-radius:8px;transition:background .15s;font-size:13px;color:var(--dim);user-select:none}
+        .profile-btn:hover{background:rgba(255,255,255,.06);color:var(--text)}
+        .profile-avatar{width:30px;height:30px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0}
+        .profile-menu{position:absolute;right:0;top:calc(100% + 8px);background:var(--card);border:1px solid var(--border);border-radius:10px;min-width:180px;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.4);display:none}
+        .profile-menu.open{display:block}
+        .profile-menu a{display:block;padding:10px 16px;font-size:13px;color:var(--dim);text-decoration:none;cursor:pointer;transition:all .15s}
+        .profile-menu a:hover{color:var(--bright);background:rgba(255,255,255,.04)}
+        .profile-menu hr{border:none;border-top:1px solid var(--border);margin:4px 0}
+        /* Color picker */
+        .color-opts{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+        .color-opt{width:24px;height:24px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:border-color .15s}
+        .color-opt.sel{border-color:var(--bright)}
+    </style>
+</head>
+<body>
+
+<!-- Login -->
+<div class="login-overlay" id="loginOverlay" style="display:none">
+    <div class="login-box">
+        <h2>&#128274; Admin Login</h2>
+        <input type="email" id="loginEmail" placeholder="E-mail">
+        <input type="password" id="loginPass" placeholder="Senha" onkeydown="if(event.key==='Enter')doLogin()">
+        <button onclick="doLogin()">Entrar</button>
+        <div class="login-error" id="loginError"></div>
+    </div>
+</div>
+
+<!-- Modal: Meu Perfil -->
+<div class="modal-bg" id="profileModal">
+    <div class="modal">
+        <h3>&#128100; Meu Perfil</h3>
+        <div class="modal-err" id="profileErr"></div>
+        <label>Nome de exibição</label>
+        <input type="text" id="profileName" placeholder="Seu nome">
+        <label>Nova Senha</label>
+        <input type="password" id="profilePass" placeholder="Deixe em branco para não alterar">
+        <label>Confirmar Senha</label>
+        <input type="password" id="profilePass2" placeholder="Repita a nova senha">
+        <div class="modal-footer">
+            <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="closeProfileModal()">Cancelar</button>
+            <button class="btn btn-accent" onclick="saveMyProfile()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Grupo -->
+<div class="modal-bg" id="groupModal">
+    <div class="modal">
+        <h3 id="groupModalTitle">Novo Grupo</h3>
+        <div class="modal-err" id="groupErr"></div>
+        <input type="hidden" id="groupId">
+        <label>Nome</label>
+        <input type="text" id="groupName" placeholder="Ex: Servidores Produção">
+        <label>Descrição</label>
+        <input type="text" id="groupDesc" placeholder="Descrição opcional">
+        <label>Cor</label>
+        <div class="color-opts" id="colorOpts"></div>
+        <div class="modal-footer">
+            <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="closeGroupModal()">Cancelar</button>
+            <button class="btn btn-accent" onclick="saveGroup()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Agentes do Grupo -->
+<div class="modal-bg" id="groupAgentsModal">
+    <div class="modal" style="width:560px;max-width:98vw">
+        <h3 id="groupAgentsTitle">Agentes do Grupo</h3>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+            <select id="agentAddSelect" style="flex:1;padding:8px;background:var(--input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px">
+                <option value="">Selecionar agente para adicionar...</option>
+            </select>
+            <button class="btn btn-accent" onclick="addAgentToGroup()">+ Adicionar</button>
+        </div>
+        <table><thead><tr><th>ID</th><th>Hostname</th><th>SO</th><th>Status</th><th></th></tr></thead>
+        <tbody id="groupAgentsBody"></tbody></table>
+        <div class="modal-footer" style="margin-top:16px">
+            <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="closeGroupAgentsModal()">Fechar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal usuário -->
+<div class="modal-bg" id="userModal">
+    <div class="modal">
+        <h3 id="modalTitle">Novo Usuário</h3>
+        <div class="modal-err" id="modalErr"></div>
+        <input type="hidden" id="modalUserId">
+        <label>E-mail</label>
+        <input type="email" id="modalEmail" placeholder="email@exemplo.com">
+        <label>Nome de exibição</label>
+        <input type="text" id="modalName" placeholder="Nome completo">
+        <label>Perfil</label>
+        <select id="modalRole">
+            <option value="admin">Admin</option>
+            <option value="viewer">Viewer</option>
+        </select>
+        <label id="passLabel">Senha</label>
+        <input type="password" id="modalPass" placeholder="Nova senha (deixe em branco para não alterar)">
+        <label>Ativo</label>
+        <select id="modalActive">
+            <option value="1">Sim</option>
+            <option value="0">Não</option>
+        </select>
+        <div class="modal-footer">
+            <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="closeModal()">Cancelar</button>
+            <button class="btn btn-accent" onclick="saveUser()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Layout -->
+<div class="top">
+    <h1>REMOTELINK <span>Admin Panel</span></h1>
+    <div class="profile-wrap">
+        <div class="profile-btn" onclick="toggleProfileMenu()">
+            <div class="profile-avatar" id="profileAvatar">?</div>
+            <span id="userInfo"></span>
+            <span style="font-size:10px;opacity:.5">&#9660;</span>
+        </div>
+        <div class="profile-menu" id="profileMenu">
+            <a onclick="openMyProfile()">&#128100; Meu Perfil</a>
+            <hr>
+            <a onclick="doLogout()" style="color:var(--danger)">&#128682; Sair</a>
+        </div>
+    </div>
+</div>
+
+<div class="grid">
+    <div class="sidebar">
+        <a class="active" onclick="showSection('dashboard')">&#128200; Dashboard</a>
+        <a onclick="showSection('agents')">&#128187; Agentes</a>
+        <a onclick="showSection('sessions')">&#128279; Sessões</a>
+        <a onclick="showSection('audit')">&#128220; Auditoria</a>
+        <a style="color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;padding:14px 24px 4px;cursor:default;pointer-events:none">&#9881; Configurações</a>
+        <a onclick="showSection('groups')" style="padding-left:40px;font-size:13px">&#128101; Grupos</a>
+        <a onclick="showSection('general')" style="padding-left:40px;font-size:13px">&#128196; Geral</a>
+        <a onclick="showSection('users')" style="padding-left:40px;font-size:13px">&#128100; Usuários</a>
+        <a href="/" style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">&#128421; Abrir Viewer</a>
+    </div>
+    <div class="content">
+
+        <!-- Dashboard -->
+        <div class="section active" id="sec-dashboard">
+            <h2>Dashboard</h2>
+            <div class="cards" id="statsCards"></div>
+            <h3 style="margin:16px 0 12px;font-size:15px;color:var(--dim)">Sessões Ativas</h3>
+            <table><thead><tr><th>Sessão</th><th>Agente</th><th>Host</th><th>Viewer</th><th>Início</th></tr></thead>
+            <tbody id="activeSessionsBody"></tbody></table>
+        </div>
+
+        <!-- Agentes -->
+        <div class="section" id="sec-agents">
+            <h2>Agentes Registrados</h2>
+            <table><thead><tr><th>ID</th><th>Hostname</th><th>SO</th><th>Usuário</th><th>IP</th><th>Status</th><th>Último Acesso</th><th></th></tr></thead>
+            <tbody id="agentsBody"></tbody></table>
+        </div>
+
+        <!-- Sessões -->
+        <div class="section" id="sec-sessions">
+            <h2>Histórico de Sessões</h2>
+            <table><thead><tr><th>Sessão</th><th>Agente</th><th>Host</th><th>Início</th><th>Duração</th><th>Tráfego</th><th>Status</th></tr></thead>
+            <tbody id="sessionsBody"></tbody></table>
+        </div>
+
+        <!-- Auditoria -->
+        <div class="section" id="sec-audit">
+            <h2>Log de Auditoria</h2>
+            <table><thead><tr><th>Data</th><th>Evento</th><th>Agente</th><th>IP</th><th>Detalhes</th></tr></thead>
+            <tbody id="auditBody"></tbody></table>
+        </div>
+
+        <!-- Usuários -->
+        <div class="section" id="sec-users">
+            <h2>Usuários do Painel</h2>
+            <div style="margin-bottom:16px">
+                <button class="btn btn-accent" onclick="openCreateUser()">+ Novo Usuário</button>
+            </div>
+            <table>
+                <thead><tr><th>E-mail</th><th>Nome</th><th>Perfil</th><th>Ativo</th><th>Último Login</th><th>Criado em</th><th></th></tr></thead>
+                <tbody id="usersBody"></tbody>
+            </table>
+        </div>
+
+        <!-- Grupos -->
+        <div class="section" id="sec-groups">
+            <h2>Grupos de Agentes</h2>
+            <div style="margin-bottom:16px">
+                <button class="btn btn-accent" onclick="openCreateGroup()">+ Novo Grupo</button>
+            </div>
+            <table>
+                <thead><tr><th>Cor</th><th>Nome</th><th>Descrição</th><th>Agentes</th><th>Criado em</th><th></th></tr></thead>
+                <tbody id="groupsBody"></tbody>
+            </table>
+        </div>
+
+        <!-- Geral -->
+        <div class="section" id="sec-general">
+            <h2>Geral</h2>
+            <div id="settingsForm" style="max-width:500px"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+let token=null, currentUserId=null;
+
+// Auto-login: reaproveita o token salvo pelo painel principal
+(async function(){
+    const stored = localStorage.getItem('auth_token');
+    const user   = localStorage.getItem('auth_user');
+    if (!stored) { document.getElementById('loginOverlay').style.display = ''; return; }
+    try {
+        const r = await fetch('/api/verify', { headers: { 'Authorization': 'Bearer ' + stored } });
+        if (!r.ok) { document.getElementById('loginOverlay').style.display = ''; return; }
+        token = stored;
+        const parts = stored.split(':');
+        currentUserId = parseInt(parts[0]) || null;
+        const name = user || 'Admin';
+        document.getElementById('userInfo').textContent = name;
+        const av = document.getElementById('profileAvatar');
+        if (av) av.textContent = (name[0] || '?').toUpperCase();
+        loadDashboard();
+    } catch(e) { document.getElementById('loginOverlay').style.display = ''; }
+})();
+
+const GROUP_COLORS=['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#84cc16'];
+let currentGroupId=null, allAgents=[];
+
+// Init color picker
+window.addEventListener('DOMContentLoaded',()=>{
+    const co=document.getElementById('colorOpts');
+    GROUP_COLORS.forEach(c=>{
+        const d=document.createElement('div');
+        d.className='color-opt';d.style.background=c;d.dataset.color=c;
+        d.onclick=()=>{document.querySelectorAll('.color-opt').forEach(x=>x.classList.remove('sel'));d.classList.add('sel')};
+        co.appendChild(d);
+    });
+    document.getElementById('colorOpts').firstChild.classList.add('sel');
+});
+
+// Close profile menu on outside click
+document.addEventListener('click',e=>{
+    if(!e.target.closest('.profile-wrap'))document.getElementById('profileMenu').classList.remove('open');
+});
+
+async function doLogin(){
+    const e=document.getElementById('loginEmail').value,p=document.getElementById('loginPass').value;
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:e,password:p})});
+    const d=await r.json();
+    if(d.ok){
+        token=d.token;
+        currentUserId=d.user_id;
+        localStorage.setItem('auth_token', d.token);
+        localStorage.setItem('auth_user',  d.user);
+        document.getElementById('loginOverlay').style.display='none';
+        document.getElementById('userInfo').textContent=d.user;
+        const av=document.getElementById('profileAvatar');
+        av.textContent=(d.user||'?')[0].toUpperCase();
+        loadDashboard();
+    }
+    else{const el=document.getElementById('loginError');el.textContent=d.error;el.style.display='block'}
+}
+
+function doLogout(){
+    token=null;currentUserId=null;
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+    document.getElementById('loginOverlay').style.display='flex';
+    document.getElementById('profileMenu').classList.remove('open');
+    document.getElementById('loginEmail').value='';
+    document.getElementById('loginPass').value='';
+}
+
+function toggleProfileMenu(){
+    document.getElementById('profileMenu').classList.toggle('open');
+}
+
+function openMyProfile(){
+    document.getElementById('profileMenu').classList.remove('open');
+    document.getElementById('profileName').value=document.getElementById('userInfo').textContent;
+    document.getElementById('profilePass').value='';
+    document.getElementById('profilePass2').value='';
+    document.getElementById('profileErr').style.display='none';
+    document.getElementById('profileModal').classList.add('open');
+}
+
+function closeProfileModal(){document.getElementById('profileModal').classList.remove('open')}
+
+async function saveMyProfile(){
+    const name=document.getElementById('profileName').value.trim();
+    const pass=document.getElementById('profilePass').value;
+    const pass2=document.getElementById('profilePass2').value;
+    const errEl=document.getElementById('profileErr');
+    if(pass&&pass!==pass2){errEl.textContent='As senhas não coincidem';errEl.style.display='block';return}
+    const payload={display_name:name};
+    if(pass)payload.password=pass;
+    const r=await fetch(`/api/users/${currentUserId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d=await r.json();
+    if(d.ok){
+        document.getElementById('userInfo').textContent=name;
+        const av=document.getElementById('profileAvatar');
+        av.textContent=(name||'?')[0].toUpperCase();
+        closeProfileModal();
+    } else{errEl.textContent=d.error||'Erro ao salvar';errEl.style.display='block'}
+}
+
+function showSection(name){
+    document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
+    document.getElementById('sec-'+name).classList.add('active');
+    document.querySelectorAll('.sidebar a').forEach(a=>a.classList.remove('active'));
+    event.target.classList.add('active');
+    if(name==='dashboard')loadDashboard();
+    if(name==='agents')loadAgents();
+    if(name==='sessions')loadSessions();
+    if(name==='audit')loadAudit();
+    if(name==='users')loadUsers();
+    if(name==='groups')loadGroups();
+    if(name==='general')loadSettings();
+}
+
+async function loadDashboard(){
+    const s=await(await fetch('/api/stats')).json();
+    document.getElementById('statsCards').innerHTML=`
+        <div class="stat-card"><div class="label">Agentes Online</div><div class="value" style="color:var(--success)">${s.online_agents}</div><div class="sub">de ${s.total_agents} registrados</div></div>
+        <div class="stat-card"><div class="label">Sessões Ativas</div><div class="value" style="color:var(--accent)">${s.active_sessions}</div></div>
+        <div class="stat-card"><div class="label">Sessões Hoje</div><div class="value">${s.sessions_today}</div></div>
+        <div class="stat-card"><div class="label">Tráfego Total</div><div class="value">${fmtBytes(s.total_bytes_transferred)}</div></div>`;
+    const as=await(await fetch('/api/sessions/active')).json();
+    document.getElementById('activeSessionsBody').innerHTML=as.map(x=>`<tr><td>${x.session_id.slice(0,12)}</td><td>${x.agent_id}</td><td>${x.hostname||''}</td><td>${(x.viewer_id||'').slice(0,12)}</td><td>${fmtDate(x.started_at)}</td></tr>`).join('')||'<tr><td colspan="5" style="color:var(--dim)">Nenhuma sessão ativa</td></tr>';
+}
+
+async function loadAgents(){
+    const a=await(await fetch('/api/agents')).json();
+    document.getElementById('agentsBody').innerHTML=a.map(x=>`<tr>
+        <td><strong>${x.agent_id}</strong></td><td>${x.hostname}</td><td>${x.os_type} ${x.os_version||''}</td>
+        <td>${x.username}</td><td>${x.ip_address}</td>
+        <td><span class="badge ${x.is_online?'badge-online':'badge-offline'}">${x.is_online?'Online':'Offline'}</span></td>
+        <td>${fmtDate(x.last_seen)}</td>
+        <td><button class="btn btn-danger" onclick="deleteAgent('${x.agent_id}')">&#128465;</button></td>
+    </tr>`).join('')||'<tr><td colspan="8" style="color:var(--dim)">Nenhum agente</td></tr>';
+}
+
+async function loadSessions(){
+    const s=await(await fetch('/api/sessions?limit=200')).json();
+    document.getElementById('sessionsBody').innerHTML=s.map(x=>`<tr>
+        <td>${x.session_id.slice(0,12)}</td><td>${x.agent_id}</td><td>${x.hostname||''}</td>
+        <td>${fmtDate(x.started_at)}</td><td>${x.duration_seconds?fmtDuration(x.duration_seconds):'-'}</td>
+        <td>${fmtBytes(x.bytes_transferred||0)}</td>
+        <td><span class="badge ${x.status==='active'?'badge-active':'badge-offline'}">${x.status}</span></td>
+    </tr>`).join('');
+}
+
+async function loadAudit(){
+    const l=await(await fetch('/api/audit?limit=200')).json();
+    document.getElementById('auditBody').innerHTML=l.map(x=>`<tr>
+        <td>${fmtDate(x.created_at)}</td><td><span class="badge badge-active">${x.event_type}</span></td>
+        <td>${x.agent_id||'-'}</td><td>${x.ip_address||'-'}</td>
+        <td style="font-size:11px;color:var(--dim)">${x.details?JSON.stringify(x.details).slice(0,80):'-'}</td>
+    </tr>`).join('');
+}
+
+// ─── Usuários ───
+
+async function loadUsers(){
+    const users=await(await fetch('/api/users')).json();
+    document.getElementById('usersBody').innerHTML=users.map(u=>`<tr>
+        <td>${u.email}</td>
+        <td>${u.display_name||'-'}</td>
+        <td><span class="badge badge-active">${u.role}</span></td>
+        <td><span class="badge ${u.is_active?'badge-online':'badge-offline'}">${u.is_active?'Sim':'Não'}</span></td>
+        <td>${fmtDate(u.last_login)}</td>
+        <td>${fmtDate(u.created_at)}</td>
+        <td style="display:flex;gap:6px">
+            <button class="btn btn-warn" onclick="openEditUser(${u.id},'${escQ(u.email)}','${escQ(u.display_name||'')}','${u.role}',${u.is_active})">&#9998;</button>
+            <button class="btn btn-danger" onclick="removeUser(${u.id},'${escQ(u.email)}')">&#128465;</button>
+        </td>
+    </tr>`).join('')||'<tr><td colspan="7" style="color:var(--dim)">Nenhum usuário</td></tr>';
+}
+
+function escQ(s){return String(s).replace(/'/g,"\\'")}
+
+function openCreateUser(){
+    document.getElementById('modalTitle').textContent='Novo Usuário';
+    document.getElementById('modalUserId').value='';
+    document.getElementById('modalEmail').value='';
+    document.getElementById('modalName').value='';
+    document.getElementById('modalRole').value='admin';
+    document.getElementById('modalPass').value='';
+    document.getElementById('modalActive').value='1';
+    document.getElementById('passLabel').textContent='Senha *';
+    document.getElementById('modalErr').style.display='none';
+    document.getElementById('userModal').classList.add('open');
+}
+
+function openEditUser(id,email,name,role,active){
+    document.getElementById('modalTitle').textContent='Editar Usuário';
+    document.getElementById('modalUserId').value=id;
+    document.getElementById('modalEmail').value=email;
+    document.getElementById('modalName').value=name;
+    document.getElementById('modalRole').value=role;
+    document.getElementById('modalPass').value='';
+    document.getElementById('modalActive').value=active?'1':'0';
+    document.getElementById('passLabel').textContent='Nova Senha (deixe em branco para não alterar)';
+    document.getElementById('modalErr').style.display='none';
+    document.getElementById('userModal').classList.add('open');
+}
+
+function closeModal(){document.getElementById('userModal').classList.remove('open')}
+
+async function saveUser(){
+    const id=document.getElementById('modalUserId').value;
+    const payload={
+        email:document.getElementById('modalEmail').value.trim(),
+        display_name:document.getElementById('modalName').value.trim(),
+        role:document.getElementById('modalRole').value,
+        is_active:document.getElementById('modalActive').value==='1'
+    };
+    const pass=document.getElementById('modalPass').value;
+    if(pass)payload.password=pass;
+    const errEl=document.getElementById('modalErr');
+    let r;
+    if(id){
+        r=await fetch(`/api/users/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    } else {
+        if(!pass){errEl.textContent='Senha obrigatória para novo usuário';errEl.style.display='block';return}
+        r=await fetch('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    }
+    const d=await r.json();
+    if(d.ok){closeModal();loadUsers()}
+    else{errEl.textContent=d.error||'Erro ao salvar';errEl.style.display='block'}
+}
+
+async function removeUser(id,email){
+    if(!confirm(`Remover usuário ${email}?`))return;
+    await fetch(`/api/users/${id}`,{method:'DELETE'});
+    loadUsers();
+}
+
+async function loadSettings(){
+    const s=await(await fetch('/api/settings')).json();
+    const labels={'max_agents':'Máx. Agentes','max_sessions_per_agent':'Máx. Sessões/Agente','session_timeout_minutes':'Timeout (min)','screen_default_quality':'Qualidade Tela','screen_default_fps':'FPS Padrão','require_password':'Exigir Senha','allow_file_transfer':'Permitir Arquivos','allow_shell':'Permitir Shell'};
+    let h='';
+    for(const[k,v]of Object.entries(s)){
+        h+=`<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)">
+            <span>${labels[k]||k}</span>
+            <input style="width:120px;padding:6px;background:var(--input);border:1px solid var(--border);border-radius:6px;color:var(--text);text-align:right" value="${v}" data-key="${k}">
+        </div>`}
+    h+=`<button class="btn btn-accent" style="margin-top:16px" onclick="saveSettings()">Salvar</button>`;
+    document.getElementById('settingsForm').innerHTML=h;
+}
+
+async function saveSettings(){
+    const data={};
+    document.querySelectorAll('#settingsForm input').forEach(i=>data[i.dataset.key]=i.value);
+    await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+    alert('Salvo!');
+}
+
+async function deleteAgent(id){
+    if(!confirm(`Remover agente ${id}?`))return;
+    await fetch(`/api/agents/${id}`,{method:'DELETE'});
+    loadAgents();
+}
+
+// ─── Grupos ───
+
+async function loadGroups(){
+    const groups=await(await fetch('/api/groups')).json();
+    document.getElementById('groupsBody').innerHTML=groups.map(g=>`<tr>
+        <td><span style="display:inline-block;width:16px;height:16px;border-radius:50%;background:${g.color};vertical-align:middle"></span></td>
+        <td><strong>${g.name}</strong></td>
+        <td style="color:var(--dim)">${g.description||'-'}</td>
+        <td><span class="badge badge-active">${g.agent_count}</span></td>
+        <td>${fmtDate(g.created_at)}</td>
+        <td style="display:flex;gap:6px">
+            <button class="btn btn-accent" onclick="openGroupAgents(${g.id},'${escQ(g.name)}')">&#128101; Agentes</button>
+            <button class="btn btn-warn" onclick="openEditGroup(${g.id},'${escQ(g.name)}','${escQ(g.description||'')}','${g.color}')">&#9998;</button>
+            <button class="btn btn-danger" onclick="removeGroup(${g.id},'${escQ(g.name)}')">&#128465;</button>
+        </td>
+    </tr>`).join('')||'<tr><td colspan="6" style="color:var(--dim)">Nenhum grupo criado</td></tr>';
+}
+
+function _selectedColor(){
+    const sel=document.querySelector('.color-opt.sel');
+    return sel?sel.dataset.color:GROUP_COLORS[0];
+}
+
+function _selectColor(color){
+    document.querySelectorAll('.color-opt').forEach(x=>{
+        x.classList.toggle('sel',x.dataset.color===color);
+    });
+}
+
+function openCreateGroup(){
+    document.getElementById('groupModalTitle').textContent='Novo Grupo';
+    document.getElementById('groupId').value='';
+    document.getElementById('groupName').value='';
+    document.getElementById('groupDesc').value='';
+    document.getElementById('groupErr').style.display='none';
+    _selectColor(GROUP_COLORS[0]);
+    document.getElementById('groupModal').classList.add('open');
+}
+
+function openEditGroup(id,name,desc,color){
+    document.getElementById('groupModalTitle').textContent='Editar Grupo';
+    document.getElementById('groupId').value=id;
+    document.getElementById('groupName').value=name;
+    document.getElementById('groupDesc').value=desc;
+    document.getElementById('groupErr').style.display='none';
+    _selectColor(color);
+    document.getElementById('groupModal').classList.add('open');
+}
+
+function closeGroupModal(){document.getElementById('groupModal').classList.remove('open')}
+
+async function saveGroup(){
+    const id=document.getElementById('groupId').value;
+    const payload={
+        name:document.getElementById('groupName').value.trim(),
+        description:document.getElementById('groupDesc').value.trim(),
+        color:_selectedColor()
+    };
+    const errEl=document.getElementById('groupErr');
+    if(!payload.name){errEl.textContent='Nome obrigatório';errEl.style.display='block';return}
+    let r;
+    if(id){r=await fetch(`/api/groups/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
+    else{r=await fetch('/api/groups',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});}
+    const d=await r.json();
+    if(d.ok){closeGroupModal();loadGroups()}
+    else{errEl.textContent=d.error||'Erro ao salvar';errEl.style.display='block'}
+}
+
+async function removeGroup(id,name){
+    if(!confirm(`Remover grupo "${name}"?`))return;
+    await fetch(`/api/groups/${id}`,{method:'DELETE'});
+    loadGroups();
+}
+
+async function openGroupAgents(groupId,groupName){
+    currentGroupId=groupId;
+    document.getElementById('groupAgentsTitle').textContent='Agentes — '+groupName;
+    // Load all agents for the select
+    if(!allAgents.length)allAgents=await(await fetch('/api/agents')).json();
+    await refreshGroupAgents();
+    document.getElementById('groupAgentsModal').classList.add('open');
+}
+
+async function refreshGroupAgents(){
+    const members=await(await fetch(`/api/groups/${currentGroupId}/agents`)).json();
+    const memberIds=new Set(members.map(a=>a.agent_id));
+    // Populate select with agents NOT in group
+    const sel=document.getElementById('agentAddSelect');
+    sel.innerHTML='<option value="">Selecionar agente para adicionar...</option>';
+    allAgents.filter(a=>!memberIds.has(a.agent_id)).forEach(a=>{
+        sel.innerHTML+=`<option value="${a.agent_id}">${a.hostname} (${a.agent_id})</option>`;
+    });
+    document.getElementById('groupAgentsBody').innerHTML=members.map(a=>`<tr>
+        <td><strong>${a.agent_id}</strong></td>
+        <td>${a.hostname}</td>
+        <td>${a.os_type}</td>
+        <td><span class="badge ${a.is_online?'badge-online':'badge-offline'}">${a.is_online?'Online':'Offline'}</span></td>
+        <td><button class="btn btn-danger" onclick="removeAgentFromGroup('${a.agent_id}')">&#128465;</button></td>
+    </tr>`).join('')||'<tr><td colspan="5" style="color:var(--dim)">Nenhum agente neste grupo</td></tr>';
+}
+
+async function addAgentToGroup(){
+    const agentId=document.getElementById('agentAddSelect').value;
+    if(!agentId)return;
+    await fetch(`/api/groups/${currentGroupId}/agents`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent_id:agentId})});
+    await refreshGroupAgents();
+}
+
+async function removeAgentFromGroup(agentId){
+    await fetch(`/api/groups/${currentGroupId}/agents/${agentId}`,{method:'DELETE'});
+    await refreshGroupAgents();
+}
+
+function closeGroupAgentsModal(){
+    document.getElementById('groupAgentsModal').classList.remove('open');
+    currentGroupId=null;
+}
+
+function fmtBytes(b){if(!b)return'0 B';const k=1024,s=['B','KB','MB','GB'],i=Math.floor(Math.log(b)/Math.log(k));return(b/Math.pow(k,i)).toFixed(1)+' '+s[i]}
+function fmtDate(d){if(!d)return'-';return new Date(d).toLocaleString('pt-BR')}
+function fmtDuration(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m '+s%60+'s';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'}
+</script>
+</body>
+</html>

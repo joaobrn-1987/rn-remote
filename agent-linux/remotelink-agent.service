@@ -1,0 +1,17 @@
+[Unit]
+Description=RemoteLink Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-/etc/remotelink/agent.env
+ExecStart=/usr/bin/python3 /opt/remotelink/agent.py --config /etc/remotelink/agent.json
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

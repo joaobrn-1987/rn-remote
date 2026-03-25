@@ -1,0 +1,1803 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RN Remote - Acesso Remoto</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #111827;
+            --bg-card: #1a2332;
+            --bg-input: #0d1321;
+            --border: #1e3048;
+            --border-focus: #3b82f6;
+            --text: #e2e8f0;
+            --text-dim: #64748b;
+            --text-bright: #f8fafc;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --shadow: 0 4px 24px rgba(0,0,0,0.4);
+        }
+
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var(--bg-primary); color:var(--text); height:100vh; overflow:hidden; }
+
+        /* Header */
+        .header { display:flex; align-items:center; justify-content:space-between; padding:0 20px; height:48px; background:var(--bg-secondary); border-bottom:1px solid var(--border); }
+        .header .logo { font-size:16px; font-weight:700; color:var(--accent); letter-spacing:1px; }
+        .header .logo span { color:var(--text-dim); font-weight:400; }
+        .header .status { display:flex; align-items:center; gap:8px; font-size:13px; }
+        .status-dot { width:8px; height:8px; border-radius:50%; background:var(--danger); }
+        .status-dot.connected { background:var(--success); }
+
+        /* Form Group (usado no connect prompt) */
+        .form-group { margin-bottom:16px; }
+        .form-group label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; text-transform:uppercase; letter-spacing:1px; }
+        .form-group input { width:100%; padding:10px 14px; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:15px; outline:none; transition:border-color .2s; }
+        .form-group input:focus { border-color:var(--accent); }
+        .form-group input::placeholder { color:var(--text-dim); }
+
+        /* Buttons */
+        .btn { display:inline-flex; align-items:center; justify-content:center; padding:10px 20px; border:none; border-radius:8px; font-size:14px; font-weight:600; cursor:pointer; transition:all .2s; }
+        .btn-primary { background:var(--accent); color:#fff; width:100%; }
+        .btn-primary:hover { background:var(--accent-hover); }
+        .btn-sm { padding:6px 12px; font-size:12px; }
+        .btn-danger { background:var(--danger); color:#fff; }
+        .btn-success { background:var(--success); color:#fff; }
+        .btn-ghost { background:transparent; border:1px solid var(--border); color:var(--text); }
+        .btn-ghost:hover { border-color:var(--text-dim); }
+        .error-msg { color:var(--danger); font-size:13px; margin-top:8px; display:none; }
+
+        /* Main Layout */
+        .main-layout { display:none; flex-direction:column; height:100%; }
+        .toolbar { display:flex; align-items:center; gap:8px; padding:8px 16px; background:var(--bg-secondary); border-bottom:1px solid var(--border); }
+        .toolbar .tab { padding:6px 14px; border-radius:6px; font-size:13px; cursor:pointer; color:var(--text-dim); transition:all .2s; }
+        .toolbar .tab:hover { background:rgba(255,255,255,0.05); color:var(--text); }
+        .toolbar .tab.active { background:var(--accent); color:#fff; }
+        .toolbar .spacer { flex:1; }
+        .toolbar select { background:var(--bg-input); border:1px solid var(--border); color:var(--text); padding:4px 8px; border-radius:6px; font-size:12px; }
+
+        /* Screen Viewer */
+        .screen-panel { display:none; flex:1; background:#000; position:relative; overflow:hidden; }
+        .screen-panel.active { display:flex; }
+        .screen-panel canvas { max-width:100%; max-height:100%; margin:auto; cursor:crosshair; image-rendering:auto; }
+        .screen-overlay { position:absolute; top:12px; right:12px; display:flex; gap:6px; z-index:10; }
+        .screen-stat { background:rgba(0,0,0,0.7); color:var(--text); padding:3px 8px; border-radius:4px; font-size:11px; font-family:monospace; }
+
+        /* Terminal Panel */
+        .terminal-panel { display:none; flex:1; background:#0d1117; overflow:hidden; }
+        .terminal-panel.active { display:flex; }
+        #xtermContainer { flex:1; width:100%; height:100%; padding:6px; }
+
+        /* Console Panel */
+        .console-panel { display:none; flex:1; flex-direction:column; background:#000; overflow:hidden; }
+        .console-panel.active { display:flex; }
+        .console-toolbar { display:flex; align-items:center; gap:10px; padding:6px 12px; background:var(--bg-secondary); border-bottom:1px solid var(--border); flex-shrink:0; font-size:12px; color:var(--text-dim); }
+        .console-toolbar select { background:var(--bg-input); border:1px solid var(--border); color:var(--text); padding:3px 8px; border-radius:6px; font-size:12px; }
+        #vconsoleContainer { flex:1; width:100%; height:100%; padding:4px; }
+        .xterm { height:100%; }
+        .xterm-viewport { border-radius:0; }
+
+        /* File Manager */
+        .files-panel { display:none; flex:1; flex-direction:column; background:var(--bg-primary); }
+        .files-panel.active { display:flex; }
+        .files-toolbar { display:flex; align-items:center; gap:8px; padding:10px 16px; background:var(--bg-secondary); border-bottom:1px solid var(--border); }
+        .files-toolbar input { flex:1; padding:6px 12px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:13px; outline:none; }
+        .file-list { flex:1; overflow-y:auto; padding:8px; }
+        .file-item { display:flex; align-items:center; gap:12px; padding:8px 12px; border-radius:6px; cursor:pointer; transition:background .15s; }
+        .file-item:hover { background:rgba(255,255,255,0.04); }
+        .file-icon { font-size:20px; width:28px; text-align:center; }
+        .file-info { flex:1; }
+        .file-name { font-size:13px; color:var(--text); }
+        .file-meta { font-size:11px; color:var(--text-dim); }
+        .file-actions { display:flex; gap:4px; opacity:0; transition:opacity .15s; }
+        .file-item:hover .file-actions { opacity:1; }
+
+        /* System Info */
+        .sysinfo-panel { display:none; flex:1; padding:20px 24px; overflow-y:auto; background:var(--bg-primary); }
+        .sysinfo-panel.active { display:block; }
+        .sysinfo-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:16px; }
+        .info-card { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:20px; }
+        .info-card-header { display:flex; align-items:center; gap:10px; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid var(--border); }
+        .info-card-icon { font-size:20px; }
+        .info-card-title { font-size:13px; font-weight:700; color:var(--text-dim); text-transform:uppercase; letter-spacing:1px; }
+        .info-row { display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(255,255,255,0.04); gap:12px; }
+        .info-row:last-child { border:none; padding-bottom:0; }
+        .info-label { color:var(--text-dim); font-size:13px; white-space:nowrap; }
+        .info-value { color:var(--text-bright); font-size:13px; font-weight:500; text-align:right; word-break:break-all; }
+        .info-badge { display:inline-block; padding:2px 10px; border-radius:20px; font-size:11px; font-weight:600; background:rgba(59,130,246,.15); color:var(--accent); }
+        /* Barra de uso */
+        .usage-bar-wrap { margin-top:10px; }
+        .usage-bar-label { display:flex; justify-content:space-between; font-size:11px; color:var(--text-dim); margin-bottom:5px; }
+        .usage-bar { height:6px; border-radius:3px; background:var(--bg-input); overflow:hidden; }
+        .usage-bar-fill { height:100%; border-radius:3px; background:var(--accent); transition:width .4s; }
+        .usage-bar-fill.warn { background:var(--warning); }
+        .usage-bar-fill.danger { background:var(--danger); }
+        .sysinfo-loading { color:var(--text-dim); font-size:14px; padding:40px 0; text-align:center; }
+
+        /* ── Machines Dashboard ───────────────────────────────── */
+        .machines-page { display:flex; flex-direction:column; height:100%; overflow:hidden; }
+
+        /* Subheader */
+        .machines-subheader { display:flex; align-items:center; gap:16px; padding:14px 24px; background:var(--bg-secondary); border-bottom:1px solid var(--border); flex-shrink:0; }
+        .machines-subheader h2 { font-size:16px; font-weight:700; color:var(--text-bright); white-space:nowrap; }
+        .machines-search { flex:1; max-width:320px; position:relative; }
+        .machines-search input { width:100%; padding:7px 12px 7px 34px; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:13px; outline:none; transition:border-color .2s; }
+        .machines-search input:focus { border-color:var(--accent); }
+        .machines-search input::placeholder { color:var(--text-dim); }
+        .machines-search-icon { position:absolute; left:10px; top:50%; transform:translateY(-50%); color:var(--text-dim); font-size:14px; pointer-events:none; }
+        .machines-stats { display:flex; gap:16px; margin-left:auto; }
+        .stat-pill { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-dim); background:var(--bg-input); border:1px solid var(--border); padding:4px 12px; border-radius:20px; }
+        .stat-pill b { color:var(--text-bright); font-size:14px; }
+        .stat-pill.online b { color:var(--success); }
+        .relay-status { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-dim); white-space:nowrap; }
+
+        /* Grid */
+        .machines-body { flex:1; overflow-y:auto; padding:20px 24px; }
+        .machines-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:14px; }
+
+        /* View toggle */
+        .view-toggle { display:flex; gap:2px; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:3px; }
+        .view-btn { background:transparent; border:none; color:var(--text-dim); cursor:pointer; border-radius:6px; min-width:30px; height:26px; padding:0 8px; font-size:13px; display:flex; align-items:center; justify-content:center; transition:all .15s; }
+        .view-btn:hover { color:var(--text); background:rgba(255,255,255,.06); }
+        .view-btn.active { background:var(--bg-card); color:var(--text-bright); box-shadow:0 1px 3px rgba(0,0,0,.3); }
+
+        /* List View */
+        .machines-grid.list-view { display:flex; flex-direction:column; gap:4px; grid-template-columns:unset; }
+        .machines-grid.list-view .machine-card { flex-direction:row; align-items:center; padding:10px 16px; gap:0; border-radius:8px; }
+        /* Coluna: ícone + nome */
+        .machines-grid.list-view .mc-top { align-items:center; flex:0 0 260px; min-width:0; gap:10px; }
+        .machines-grid.list-view .mc-icon { width:32px; height:32px; font-size:16px; flex-shrink:0; border-radius:7px; }
+        .machines-grid.list-view .mc-info { min-width:0; }
+        .machines-grid.list-view .mc-name { font-size:13px; }
+        .machines-grid.list-view .mc-host { font-size:11px; }
+        /* Badge ocultado no modo lista — status indicado pela borda colorida */
+        .machines-grid.list-view .mc-badge { display:none; }
+        /* Oculta divisor */
+        .machines-grid.list-view .mc-divider { display:none; }
+        /* Coluna: detalhes como células */
+        .machines-grid.list-view .mc-details { display:flex; flex-direction:row; flex:1; gap:0; align-items:center; }
+        .machines-grid.list-view .mc-detail { flex:1; display:flex; flex-direction:column; gap:1px; padding:0 14px; border-left:1px solid var(--border); }
+        .machines-grid.list-view .mc-detail-label { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; }
+        .machines-grid.list-view .mc-detail-value { font-size:12px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        /* Coluna: status */
+        .machines-grid.list-view .mc-footer { flex-shrink:0; padding-left:16px; border-left:1px solid var(--border); margin-left:0; }
+        /* Indicador de status à esquerda do card */
+        .machines-grid.list-view .machine-card { border-left-width:3px; }
+        .machines-grid.list-view .machine-card:not(.offline) { border-left-color:var(--success); }
+        .machines-grid.list-view .machine-card.offline { border-left-color:var(--danger); }
+
+        /* Card */
+        .machine-card { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:18px; cursor:pointer; transition:border-color .2s, box-shadow .2s; display:flex; flex-direction:column; gap:12px; }
+        .machine-card:hover { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent), var(--shadow); }
+        .machine-card.offline { opacity:.55; cursor:default; }
+        .machine-card.offline:hover { border-color:var(--border); box-shadow:none; }
+        .mc-top { display:flex; align-items:flex-start; gap:12px; }
+        .mc-icon { width:44px; height:44px; border-radius:10px; background:var(--bg-input); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:22px; flex-shrink:0; }
+        .mc-info { flex:1; min-width:0; }
+        .mc-name { font-size:15px; font-weight:700; color:var(--text-bright); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .mc-host { font-size:12px; color:var(--text-dim); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .mc-badge { font-size:11px; font-weight:600; padding:3px 8px; border-radius:20px; flex-shrink:0; }
+        .badge-on  { background:rgba(16,185,129,.15); color:var(--success); }
+        .badge-off { background:rgba(100,116,139,.1);  color:var(--text-dim); }
+        .mc-divider { border:none; border-top:1px solid var(--border); margin:0; }
+        .mc-details { display:grid; grid-template-columns:1fr 1fr; gap:6px 12px; }
+        .mc-detail { display:flex; flex-direction:column; gap:2px; }
+        .mc-detail-label { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.6px; }
+        .mc-detail-value { font-size:12px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .mc-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+        .btn-connect { display:inline-flex; align-items:center; gap:6px; padding:7px 16px; background:var(--accent); color:#fff; border:none; border-radius:7px; font-size:13px; font-weight:600; cursor:pointer; transition:background .2s; }
+        .btn-connect:hover { background:var(--accent-hover); }
+        .btn-edit-mc { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; background:rgba(99,102,241,.08); border:1px solid rgba(99,102,241,.3); border-radius:7px; font-size:12px; color:#818cf8; cursor:pointer; transition:all .2s; }
+        .btn-edit-mc:hover { background:rgba(99,102,241,.18); border-color:rgba(99,102,241,.55); color:#a5b4fc; }
+        .btn-update-mc { display:inline-flex; align-items:center; gap:5px; padding:5px 10px; background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.35); border-radius:7px; font-size:12px; color:var(--warning); cursor:pointer; transition:all .2s; }
+        .btn-update-mc:hover { background:rgba(245,158,11,.22); }
+        .btn-update-mc.updating { opacity:.6; cursor:default; pointer-events:none; }
+        .btn-updated-mc { display:inline-flex; align-items:center; gap:5px; padding:5px 10px; background:rgba(34,197,94,.12); border:1px solid rgba(34,197,94,.35); border-radius:7px; font-size:12px; color:#4ade80; cursor:default; pointer-events:none; }
+        .mc-version { font-size:10px; color:var(--text-dim); margin-top:2px; }
+        /* Modal de edição */
+        .edit-modal { position:fixed; inset:0; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; z-index:600; backdrop-filter:blur(4px); }
+        .edit-modal.hidden { display:none; }
+        .edit-modal-box { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:28px; width:360px; box-shadow:var(--shadow); }
+        .edit-modal-box h3 { font-size:16px; font-weight:700; margin-bottom:18px; color:var(--text-bright); }
+
+        /* Empty */
+        .machines-empty { grid-column:1/-1; text-align:center; color:var(--text-dim); padding:60px 20px; font-size:14px; line-height:2; }
+        .machines-empty span { font-size:40px; display:block; margin-bottom:12px; }
+
+        /* Connect Prompt */
+        .connect-prompt { position:fixed; inset:0; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; z-index:500; backdrop-filter:blur(4px); }
+        .connect-prompt.hidden { display:none; }
+        .connect-prompt-box { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:32px; width:380px; box-shadow:var(--shadow); }
+        .connect-prompt-box h3 { font-size:17px; font-weight:700; margin-bottom:4px; color:var(--text-bright); }
+        .connect-prompt-box p { font-size:13px; color:var(--text-dim); margin-bottom:20px; }
+        .connect-prompt-actions { display:flex; gap:8px; margin-top:16px; }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width:6px; }
+        ::-webkit-scrollbar-track { background:transparent; }
+        ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+        ::-webkit-scrollbar-thumb:hover { background:var(--text-dim); }
+        .hidden { display:none!important; }
+
+        /* ── App Body Layout ─────────────────────────────────── */
+        .app-body { display:flex; height:calc(100vh - 48px); overflow:hidden; }
+        .content-area { flex:1; overflow:hidden; display:flex; flex-direction:column; min-width:0; }
+
+        /* ── Sidebar ─────────────────────────────────────────── */
+        .sidebar { width:220px; background:var(--bg-secondary); border-right:1px solid var(--border); display:flex; flex-direction:column; flex-shrink:0; overflow-y:auto; }
+        .sidebar-logo { padding:16px 18px 10px; font-size:11px; font-weight:700; color:var(--text-dim); letter-spacing:1.5px; text-transform:uppercase; }
+        .sidebar-nav { display:flex; flex-direction:column; gap:2px; padding:6px 10px; flex:1; }
+        .sidebar-item { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:8px; font-size:13px; font-weight:500; color:var(--text-dim); cursor:pointer; transition:all .15s; user-select:none; }
+        .sidebar-item:hover { background:rgba(255,255,255,.06); color:var(--text); }
+        .sidebar-item.active { background:rgba(59,130,246,.15); color:var(--accent); }
+        .sidebar-item .si-icon { font-size:16px; width:20px; text-align:center; flex-shrink:0; }
+        .sidebar-sep { height:1px; background:var(--border); margin:8px 10px; }
+        .sidebar-footer { padding:10px; border-top:1px solid var(--border); }
+        .sidebar-footer .sidebar-item { font-size:12px; }
+
+        /* ── Users Section ───────────────────────────────────── */
+        .users-section { display:flex; flex-direction:column; height:100%; overflow:hidden; background:var(--bg-primary); }
+        .users-header { display:flex; align-items:center; justify-content:space-between; padding:16px 24px; background:var(--bg-secondary); border-bottom:1px solid var(--border); flex-shrink:0; }
+        .users-header h2 { font-size:16px; font-weight:700; color:var(--text-bright); }
+        .users-body { flex:1; overflow-y:auto; padding:20px 24px; }
+        .data-table { width:100%; border-collapse:collapse; }
+        .data-table th { text-align:left; padding:10px 14px; font-size:11px; font-weight:700; color:var(--text-dim); text-transform:uppercase; letter-spacing:.8px; border-bottom:1px solid var(--border); }
+        .data-table td { padding:12px 14px; font-size:13px; color:var(--text); border-bottom:1px solid rgba(255,255,255,.04); vertical-align:middle; }
+        .data-table tr:last-child td { border-bottom:none; }
+        .data-table tr:hover td { background:rgba(255,255,255,.02); }
+        .role-badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; }
+        .role-admin { background:rgba(59,130,246,.15); color:var(--accent); }
+        .role-viewer { background:rgba(100,116,139,.12); color:var(--text-dim); }
+        .active-badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; background:rgba(16,185,129,.12); color:var(--success); }
+        .inactive-badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; background:rgba(239,68,68,.12); color:var(--danger); }
+        .table-actions { display:flex; gap:6px; }
+        /* Modal genérico */
+        .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; z-index:700; backdrop-filter:blur(4px); }
+        .modal-overlay.hidden { display:none; }
+        .modal-box { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:28px; width:420px; box-shadow:var(--shadow); }
+        .modal-box h3 { font-size:16px; font-weight:700; margin-bottom:20px; color:var(--text-bright); }
+        .modal-actions { display:flex; gap:8px; margin-top:20px; }
+
+        /* Admin Auth Overlay */
+        .auth-overlay { position:fixed; inset:0; background:var(--bg-primary); display:flex; align-items:center; justify-content:center; z-index:1000; }
+        .auth-overlay.hidden { display:none; }
+        .auth-box { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:40px; width:400px; box-shadow:var(--shadow); }
+        .auth-box h2 { font-size:22px; margin-bottom:6px; color:var(--text-bright); }
+        .auth-box p { color:var(--text-dim); font-size:13px; margin-bottom:28px; }
+        .auth-error { color:var(--danger); font-size:13px; margin-top:10px; display:none; }
+        .header-user { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--text-dim); }
+        .header-user strong { color:var(--text); }
+        .btn-logout { padding:4px 10px; font-size:12px; background:transparent; border:1px solid var(--border); border-radius:6px; color:var(--text-dim); cursor:pointer; transition:all .15s; }
+        .btn-logout:hover { border-color:var(--danger); color:var(--danger); }
+    </style>
+</head>
+<body>
+
+<!-- Admin Auth Overlay -->
+<div class="auth-overlay" id="authOverlay">
+    <div class="auth-box">
+        <h2>&#128274; RN Remote</h2>
+        <p>Faça login para acessar o sistema.</p>
+        <div class="form-group">
+            <label>E-mail</label>
+            <input type="email" id="authEmail" placeholder="admin@exemplo.com" autocomplete="username"
+                onkeydown="if(event.key==='Enter')document.getElementById('authPass').focus()">
+        </div>
+        <div class="form-group">
+            <label>Senha</label>
+            <input type="password" id="authPass" placeholder="••••••••" autocomplete="current-password"
+                onkeydown="if(event.key==='Enter')doAdminLogin()">
+        </div>
+        <button class="btn btn-primary" id="btnAdminLogin" onclick="doAdminLogin()">Entrar</button>
+        <div class="auth-error" id="authError"></div>
+    </div>
+</div>
+
+<!-- Header -->
+<div class="header">
+    <div class="logo">RN<span>REMOTE</span></div>
+    <div style="display:flex;align-items:center;gap:16px;">
+        <div class="status">
+            <span id="statusText">Desconectado</span>
+            <div class="status-dot" id="statusDot"></div>
+        </div>
+        <div class="header-user" id="headerUser" style="display:none;">
+            <strong id="headerUserName"></strong>
+            <button class="btn-logout" onclick="adminLogout()">Sair</button>
+        </div>
+    </div>
+</div>
+
+<!-- campos ocultos usados pelo JS existente -->
+<input type="hidden" id="relayUrl" value="wss://rnremote.joaoneto.tec.br/ws">
+<input type="hidden" id="agentId">
+
+<!-- App Body: sidebar + content -->
+<div class="app-body">
+
+<!-- Sidebar (visível após login) -->
+<div class="sidebar hidden" id="sidebar">
+    <div class="sidebar-logo">RN Remote</div>
+    <nav class="sidebar-nav">
+        <div class="sidebar-item active" data-section="machines" onclick="showSection('machines')">
+            <span class="si-icon">&#128187;</span> Máquinas
+        </div>
+    </nav>
+    <div class="sidebar-footer">
+        <div class="sidebar-item" onclick="window.location.href='/admin'" title="Painel administrativo completo">
+            <span class="si-icon">&#9881;</span> Admin Avançado
+        </div>
+    </div>
+</div>
+
+<!-- Content Area -->
+<div class="content-area" id="contentArea">
+
+<!-- Painel de máquinas -->
+<div class="machines-page" id="loginPanel">
+
+    <div class="machines-subheader">
+        <h2>&#128187; Máquinas</h2>
+        <div class="machines-search">
+            <span class="machines-search-icon">&#128269;</span>
+            <input type="text" id="machinesSearch" placeholder="Buscar por nome, IP, SO..." oninput="filterMachines()">
+        </div>
+        <div class="machines-stats">
+            <div class="stat-pill online"><b id="statOnline">0</b> online</div>
+            <div class="stat-pill"><b id="statTotal">0</b> total</div>
+        </div>
+        <div class="view-toggle" style="gap:2px">
+            <button class="view-btn active" id="filterAll"     onclick="setFilter('all')"     >Todas</button>
+            <button class="view-btn"        id="filterOnline"  onclick="setFilter('online')"  >Online</button>
+            <button class="view-btn"        id="filterOffline" onclick="setFilter('offline')" >Offline</button>
+        </div>
+        <div class="view-toggle">
+            <button class="view-btn active" id="btnViewCard" onclick="setViewMode('card')" title="Cartões">&#9707;</button>
+            <button class="view-btn" id="btnViewList" onclick="setViewMode('list')" title="Lista">&#9776;</button>
+        </div>
+        <div class="relay-status">
+            <div class="status-dot" id="statusDot2"></div>
+            <span id="statusText2">Conectando...</span>
+        </div>
+    </div>
+
+    <div class="machines-body">
+        <div class="machines-grid" id="machinesList">
+            <div class="machines-empty">
+                <span>&#128262;</span>
+                Aguardando conexão com o relay...
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- Modal de edição de máquina -->
+<div class="edit-modal hidden" id="editModal">
+    <div class="edit-modal-box">
+        <h3>&#9998; Editar Máquina</h3>
+        <input type="hidden" id="editAgentId">
+        <div class="form-group">
+            <label>Nome (apelido)</label>
+            <input type="text" id="editNickname" placeholder="Ex: Servidor Web" maxlength="64"
+                onkeydown="if(event.key==='Enter')saveEdit()">
+        </div>
+        <div class="error-msg" id="editError"></div>
+        <div class="connect-prompt-actions">
+            <button class="btn btn-primary" onclick="saveEdit()">Salvar</button>
+            <button class="btn btn-ghost" onclick="closeEdit()">Cancelar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Prompt de senha ao clicar em uma máquina -->
+<div class="connect-prompt hidden" id="connectPrompt">
+    <div class="connect-prompt-box">
+        <h3 id="connectPromptTitle">Conectar</h3>
+        <p id="connectPromptMeta"></p>
+        <div class="form-group">
+            <label>Senha de Acesso</label>
+            <input type="password" id="agentPassword" placeholder="••••••••" autocomplete="off"
+                onkeydown="if(event.key==='Enter')connectToAgent()">
+        </div>
+        <div class="error-msg" id="loginError"></div>
+        <div class="connect-prompt-actions">
+            <button class="btn btn-primary" onclick="connectToAgent()">Conectar</button>
+            <button class="btn btn-ghost" onclick="closeConnectPrompt()">Cancelar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Main Layout -->
+<div class="main-layout" id="mainLayout">
+    <div class="toolbar">
+        <div class="tab active" data-tab="screen" onclick="switchTab('screen')">&#128421; Tela</div>
+        <div class="tab" data-tab="terminal" onclick="switchTab('terminal')">&#9000; Terminal</div>
+        <div class="tab" data-tab="console" onclick="switchTab('console')">&#128421; Console TTY</div>
+        <div class="tab" data-tab="files" onclick="switchTab('files')">&#128193; Arquivos</div>
+        <div class="tab" data-tab="sysinfo" onclick="switchTab('sysinfo')">&#9881; Sistema</div>
+        <div class="spacer"></div>
+        <select id="qualitySelect" onchange="changeQuality(this.value)">
+            <option value="30">Baixa Qualidade</option>
+            <option value="50" selected>Média</option>
+            <option value="75">Alta</option>
+            <option value="90">Máxima</option>
+        </select>
+        <select id="fpsSelect" onchange="changeFps(this.value)">
+            <option value="5">5 FPS</option>
+            <option value="10">10 FPS</option>
+            <option value="15" selected>15 FPS</option>
+            <option value="30">30 FPS</option>
+        </select>
+        <button class="btn btn-sm btn-danger" onclick="disconnect()">Desconectar</button>
+    </div>
+
+    <!-- Screen Viewer -->
+    <div class="screen-panel active" id="screenPanel">
+        <div class="screen-overlay">
+            <span class="screen-stat" id="fpsCounter">0 FPS</span>
+            <span class="screen-stat" id="latencyCounter">0ms</span>
+            <span class="screen-stat" id="bandwidthCounter">0 KB/s</span>
+        </div>
+        <canvas id="screenCanvas"></canvas>
+    </div>
+
+    <!-- Terminal -->
+    <div class="terminal-panel" id="terminalPanel">
+        <div id="xtermContainer"></div>
+    </div>
+
+    <!-- Console TTY -->
+    <div class="console-panel" id="consolePanel">
+        <div class="console-toolbar">
+            <span>&#128421; Virtual Console</span>
+            <label>TTY:
+                <select id="ttySelect" onchange="changeTTY(this.value)">
+                    <option value="1">tty1</option>
+                    <option value="2">tty2</option>
+                    <option value="3">tty3</option>
+                    <option value="4">tty4</option>
+                    <option value="5">tty5</option>
+                    <option value="6">tty6</option>
+                </select>
+            </label>
+            <span style="margin-left:auto;color:var(--text-dim);font-size:11px">Console físico da máquina — requer agente como root</span>
+        </div>
+        <div id="vconsoleContainer"></div>
+    </div>
+
+    <!-- File Manager -->
+    <div class="files-panel" id="filesPanel">
+        <div class="files-toolbar">
+            <button class="btn btn-sm btn-ghost" onclick="navigateUp()">&#11014; Voltar</button>
+            <input type="text" id="pathInput" placeholder="/home/user" onkeydown="if(event.key==='Enter')navigateTo(this.value)">
+            <button class="btn btn-sm btn-ghost" onclick="refreshFiles()">&#128259; Atualizar</button>
+            <label class="btn btn-sm btn-success" style="cursor:pointer;margin-left:auto">
+                &#11014; Upload
+                <input type="file" id="uploadInput" multiple style="display:none" onchange="uploadFiles(this.files)">
+            </label>
+        </div>
+        <div id="uploadProgress" style="display:none;padding:6px 16px;font-size:12px;color:var(--text-dim);background:var(--bg-secondary);border-bottom:1px solid var(--border)"></div>
+        <div class="file-list" id="fileList"></div>
+    </div>
+
+    <!-- System Info -->
+    <div class="sysinfo-panel" id="sysinfoPanel">
+        <div id="sysinfoContent" class="sysinfo-loading">&#9881; Carregando informações...</div>
+    </div>
+</div>
+
+<!-- ── Seção Usuários ──────────────────────────────── -->
+<div class="users-section hidden" id="usersSection">
+    <div class="users-header">
+        <h2>&#128100; Usuários</h2>
+        <button class="btn btn-sm btn-primary" onclick="openUserModal()">+ Novo Usuário</button>
+    </div>
+    <div class="users-body">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>E-mail</th>
+                    <th>Nome</th>
+                    <th>Função</th>
+                    <th>Status</th>
+                    <th>Último Login</th>
+                    <th>Ações</th>
+                </tr>
+            </thead>
+            <tbody id="usersTableBody">
+                <tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:30px">Carregando...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+</div><!-- /content-area -->
+</div><!-- /app-body -->
+
+<!-- Modal de Usuário -->
+<div class="modal-overlay hidden" id="userModal">
+    <div class="modal-box">
+        <h3 id="userModalTitle">Novo Usuário</h3>
+        <input type="hidden" id="userModalId">
+        <div class="form-group">
+            <label>E-mail</label>
+            <input type="email" id="userModalEmail" placeholder="usuario@exemplo.com"
+                onkeydown="if(event.key==='Enter')document.getElementById('userModalName').focus()">
+        </div>
+        <div class="form-group">
+            <label>Nome</label>
+            <input type="text" id="userModalName" placeholder="Nome completo"
+                onkeydown="if(event.key==='Enter')document.getElementById('userModalPass').focus()">
+        </div>
+        <div class="form-group">
+            <label>Senha <span id="userModalPassHint" style="color:var(--text-dim);font-size:11px">(deixe em branco para manter)</span></label>
+            <input type="password" id="userModalPass" placeholder="••••••••">
+        </div>
+        <div class="form-group">
+            <label>Função</label>
+            <select id="userModalRole" style="width:100%;padding:10px 14px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;outline:none;">
+                <option value="admin">admin</option>
+                <option value="viewer">viewer</option>
+            </select>
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:10px">
+            <input type="checkbox" id="userModalActive" checked style="width:auto">
+            <label for="userModalActive" style="margin:0;text-transform:none;font-size:13px;color:var(--text)">Ativo</label>
+        </div>
+        <div class="error-msg" id="userModalError"></div>
+        <div class="modal-actions">
+            <button class="btn btn-primary" onclick="saveUserModal()">Salvar</button>
+            <button class="btn btn-ghost" onclick="closeUserModal()">Cancelar</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// ─── Estado Global ───
+let ws = null;
+let viewerId = null;
+let sessionId = null;
+let currentAgentId = null;
+let isConnected = false;
+let frameCount = 0;
+let lastFpsUpdate = Date.now();
+let bytesReceived = 0;
+let lastBandwidthUpdate = Date.now();
+let currentPath = '';
+let screenImage = new Image();
+
+// Cache local de nicknames — persiste entre atualizações do relay
+let cachedNicknames = {};
+
+// Versão mais recente do agente disponível no servidor
+let latestAgentVersion = "";
+
+// Agentes que acabaram de ser atualizados (exibe badge de sucesso por 10s)
+const agentUpdateSuccess = new Map(); // agent_id -> timeout handle
+
+// Controle de renderização — evita race condition entre chamadas async
+let _renderGen = 0;
+let _lastOnlineAgents = []; // último snapshot dos agentes online (do relay)
+
+// Modo de visualização das máquinas ('card' ou 'list')
+let viewMode = localStorage.getItem('machines_view') || 'card';
+
+// Filtro de status ('all', 'online', 'offline') — padrão: todas
+let statusFilter = localStorage.getItem('machines_filter') || 'all';
+
+const canvas = document.getElementById('screenCanvas');
+const ctx = canvas.getContext('2d');
+
+// ─── Conexão WebSocket ───
+
+function connectToRelay() {
+    const relayUrl = document.getElementById('relayUrl').value.trim();
+    if (!relayUrl) return showError('URL do relay obrigatória');
+
+    setButtonLoading(true);
+    hideError();
+
+    try {
+        ws = new WebSocket(relayUrl);
+
+        ws.onopen = () => {
+            console.log('Conectado ao relay');
+            updateStatus('Conectado ao relay', true);
+            sendMessage('register_viewer', { viewer_id: crypto.randomUUID() });
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                handleMessage(msg);
+            } catch (e) {
+                console.error('Erro parsing:', e);
+            }
+        };
+
+        ws.onclose = () => {
+            console.log('Desconectado do relay');
+            updateStatus('Desconectado', false);
+            isConnected = false;
+            setButtonLoading(false);
+            if (sessionId) {
+                sessionId = null;
+                showLogin();
+            }
+        };
+
+        ws.onerror = (err) => {
+            console.error('WebSocket error:', err);
+            showError('Erro de conexão com o relay');
+            setButtonLoading(false);
+        };
+    } catch (e) {
+        showError('URL inválida');
+        setButtonLoading(false);
+    }
+}
+
+function connectToAgent() {
+    const agentId = document.getElementById('agentId').value.trim();
+    const password = document.getElementById('agentPassword').value.trim();
+    if (!agentId) return showError('ID do agente obrigatório');
+    sendMessage('connect_request', { agent_id: agentId, password: password });
+}
+
+function disconnect() {
+    if (sessionId) {
+        sendMessage('disconnect', { session_id: sessionId }, sessionId);
+    }
+    sessionId = null;
+    showLogin();
+}
+
+// ─── Handler de Mensagens ───
+
+function handleMessage(msg) {
+    switch (msg.type) {
+        case 'auth_success':
+            viewerId = msg.data.viewer_id;
+            updateStatus('Conectado ao relay', true);
+            break;
+
+        case 'agent_list':
+            renderAgentList(msg.data.agents || []);
+            break;
+
+        case 'connect_accept':
+            sessionId = msg.data.session_id;
+            currentAgentId = msg.data.agent_id;
+            showMain();
+            sendMessage('screen_request', { action: 'start' }, sessionId);
+            break;
+
+        case 'connect_reject':
+            showError(msg.data.reason || 'Conexão rejeitada');
+            break;
+
+        case 'screen_frame':
+            renderFrame(msg.data);
+            break;
+
+        case 'shell_output':
+            appendTerminalOutput(msg.data.output);
+            break;
+
+        case 'console_frame':
+            if (vcterm) vcterm.write(msg.data.output);
+            break;
+
+        case 'file_list_response':
+            renderFileList(msg.data);
+            break;
+
+        case 'file_chunk':
+            handleFileChunk(msg.data);
+            break;
+
+        case 'file_complete':
+            handleFileComplete(msg.data);
+            break;
+
+        case 'system_info':
+            renderSystemInfo(msg.data);
+            break;
+
+        case 'disconnect':
+            sessionId = null;
+            showLogin();
+            break;
+
+        case 'file_error':
+            alert('Erro de arquivo: ' + (msg.data.error || 'desconhecido'));
+            break;
+
+        case 'error':
+            showError(msg.data.message || 'Erro desconhecido');
+            break;
+
+        case 'pong':
+            break;
+    }
+}
+
+// ─── Renderização de Tela ───
+
+function renderFrame(data) {
+    const frame = data.frame;
+    if (!frame) return;
+
+    const now = Date.now();
+    bytesReceived += frame.length * 0.75;
+
+    screenImage.onload = () => {
+        canvas.width = screenImage.width;
+        canvas.height = screenImage.height;
+        ctx.drawImage(screenImage, 0, 0);
+    };
+    screenImage.src = 'data:image/jpeg;base64,' + frame;
+
+    frameCount++;
+    if (now - lastFpsUpdate >= 1000) {
+        document.getElementById('fpsCounter').textContent = frameCount + ' FPS';
+        frameCount = 0;
+        lastFpsUpdate = now;
+    }
+
+    if (now - lastBandwidthUpdate >= 1000) {
+        const kbps = (bytesReceived / 1024).toFixed(0);
+        document.getElementById('bandwidthCounter').textContent = kbps + ' KB/s';
+        bytesReceived = 0;
+        lastBandwidthUpdate = now;
+    }
+}
+
+// ─── Eventos de Mouse ───
+
+canvas.addEventListener('mousemove', (e) => {
+    if (!sessionId) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    sendMessage('mouse_event', {
+        action: 'move',
+        x: Math.round((e.clientX - rect.left) * scaleX),
+        y: Math.round((e.clientY - rect.top) * scaleY),
+        screen_w: canvas.width,
+        screen_h: canvas.height,
+    }, sessionId);
+});
+
+canvas.addEventListener('mousedown', (e) => {
+    if (!sessionId) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const actions = { 0: 'left_down', 1: 'middle_click', 2: 'right_down' };
+    sendMessage('mouse_event', {
+        action: actions[e.button] || 'left_down',
+        x: Math.round((e.clientX - rect.left) * scaleX),
+        y: Math.round((e.clientY - rect.top) * scaleY),
+        screen_w: canvas.width,
+        screen_h: canvas.height,
+    }, sessionId);
+});
+
+canvas.addEventListener('mouseup', (e) => {
+    if (!sessionId) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const actions = { 0: 'left_up', 2: 'right_up' };
+    sendMessage('mouse_event', {
+        action: actions[e.button] || 'left_up',
+        x: Math.round((e.clientX - rect.left) * scaleX),
+        y: Math.round((e.clientY - rect.top) * scaleY),
+        screen_w: canvas.width,
+        screen_h: canvas.height,
+    }, sessionId);
+});
+
+canvas.addEventListener('dblclick', (e) => {
+    if (!sessionId) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    sendMessage('mouse_event', {
+        action: 'left_dblclick',
+        x: Math.round((e.clientX - rect.left) * scaleX),
+        y: Math.round((e.clientY - rect.top) * scaleY),
+        screen_w: canvas.width,
+        screen_h: canvas.height,
+    }, sessionId);
+});
+
+canvas.addEventListener('wheel', (e) => {
+    if (!sessionId) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    sendMessage('mouse_event', {
+        action: 'scroll',
+        x: Math.round((e.clientX - rect.left) * scaleX),
+        y: Math.round((e.clientY - rect.top) * scaleY),
+        dx: Math.sign(e.deltaX),
+        dy: -Math.sign(e.deltaY),
+        screen_w: canvas.width,
+        screen_h: canvas.height,
+    }, sessionId);
+}, { passive: false });
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ─── Eventos de Teclado ───
+
+document.addEventListener('keydown', (e) => {
+    if (!sessionId) return;
+    const activePanel = document.querySelector('.screen-panel.active');
+    if (!activePanel) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    e.preventDefault();
+    sendMessage('keyboard_event', {
+        action: 'key_down',
+        key: e.key,
+        code: e.code,
+        modifiers: getModifiers(e),
+    }, sessionId);
+});
+
+document.addEventListener('keyup', (e) => {
+    if (!sessionId) return;
+    const activePanel = document.querySelector('.screen-panel.active');
+    if (!activePanel) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    e.preventDefault();
+    sendMessage('keyboard_event', {
+        action: 'key_up',
+        key: e.key,
+        code: e.code,
+        modifiers: getModifiers(e),
+    }, sessionId);
+});
+
+function getModifiers(e) {
+    const mods = [];
+    if (e.ctrlKey) mods.push('ControlLeft');
+    if (e.shiftKey) mods.push('ShiftLeft');
+    if (e.altKey) mods.push('AltLeft');
+    if (e.metaKey) mods.push('MetaLeft');
+    return mods;
+}
+
+// ─── Terminal (xterm.js) ───
+
+let term     = null;
+let fitAddon = null;
+
+function initTerminal() {
+    const container = document.getElementById('xtermContainer');
+
+    // Destrói instância anterior se existir
+    if (term) { term.dispose(); term = null; }
+    container.innerHTML = '';
+
+    term = new Terminal({
+        theme: {
+            background:  '#0d1117',
+            foreground:  '#d4d4d4',
+            cursor:      '#58a6ff',
+            black:       '#484f58',
+            red:         '#ff7b72',
+            green:       '#3fb950',
+            yellow:      '#d29922',
+            blue:        '#58a6ff',
+            magenta:     '#bc8cff',
+            cyan:        '#39c5cf',
+            white:       '#b1bac4',
+            brightBlack: '#6e7681',
+        },
+        fontFamily:  "'Cascadia Code','Fira Code','Consolas',monospace",
+        fontSize:    13,
+        lineHeight:  1.4,
+        cursorBlink: true,
+        cursorStyle: 'block',
+        scrollback:  5000,
+        convertEol:  false,
+    });
+
+    fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(container);
+
+    // Pequeno delay para garantir que o DOM está dimensionado
+    setTimeout(() => {
+        fitAddon.fit();
+        const { cols, rows } = term;
+        sendMessage('shell_start', { cols, rows }, sessionId);
+        term.focus();
+    }, 50);
+
+    // Envia cada tecla/paste direto para o agente (raw input)
+    term.onData(data => {
+        sendMessage('shell_input', { input: data }, sessionId);
+    });
+
+    // Envia resize quando o terminal muda de tamanho
+    term.onResize(({ cols, rows }) => {
+        sendMessage('shell_resize', { cols, rows }, sessionId);
+    });
+}
+
+function appendTerminalOutput(text) {
+    if (term) term.write(text);
+}
+
+// Ajusta o xterm quando a janela redimensiona
+window.addEventListener('resize', () => {
+    if (fitAddon  && term)    fitAddon.fit();
+    if (vcFitAddon && vcterm) vcFitAddon.fit();
+});
+
+// ─── Virtual Console ───
+
+let vcterm     = null;
+let vcFitAddon = null;
+
+function initVConsole(tty) {
+    const container = document.getElementById('vconsoleContainer');
+    if (vcterm) { vcterm.dispose(); vcterm = null; }
+    container.innerHTML = '';
+
+    vcterm = new Terminal({
+        theme: { background: '#000000', foreground: '#aaaaaa', cursor: '#ffffff' },
+        fontFamily: "'Cascadia Code','Fira Code','Consolas',monospace",
+        fontSize: 13,
+        cursorBlink: true,
+        scrollback: 0,        // console sem histórico
+        convertEol: false,
+    });
+    vcFitAddon = new FitAddon.FitAddon();
+    vcterm.loadAddon(vcFitAddon);
+    vcterm.open(container);
+
+    vcterm.onData(data => sendMessage('console_input', { input: data }, sessionId));
+
+    // Aguarda o fit antes de iniciar o console — evita que frames cheguem antes do
+    // terminal ter o tamanho correto, o que causaria scroll e cursor fora de posição.
+    setTimeout(() => {
+        vcFitAddon.fit();
+        sendMessage('console_start', { tty: parseInt(tty || 1) }, sessionId);
+    }, 60);
+}
+
+function changeTTY(tty) {
+    sendMessage('console_stop', {}, sessionId);
+    if (vcterm) { vcterm.dispose(); vcterm = null; }
+    document.getElementById('vconsoleContainer').innerHTML = '';
+    initVConsole(tty);
+}
+
+// ─── File Manager ───
+
+function navigateTo(path) {
+    document.getElementById('pathInput').value = path;
+    currentPath = path;
+    sendMessage('file_list_request', { path: path }, sessionId);
+}
+
+function navigateUp() {
+    if (currentPath) {
+        const parts = currentPath.replace(/\\/g, '/').split('/');
+        parts.pop();
+        navigateTo(parts.join('/') || '/');
+    }
+}
+
+function refreshFiles() {
+    navigateTo(currentPath || '');
+}
+
+function renderFileList(data) {
+    if (data.error) {
+        document.getElementById('fileList').innerHTML =
+            '<div style="padding:20px;color:var(--danger)">' + data.error + '</div>';
+        return;
+    }
+
+    currentPath = data.path;
+    document.getElementById('pathInput').value = data.path;
+
+    const entries = data.entries || [];
+    let html = '';
+
+    for (const entry of entries) {
+        const icon = entry.is_dir ? '&#128193;' : getFileIcon(entry.name);
+        const size = entry.is_dir ? '' : formatSize(entry.size);
+        const date = entry.modified ? new Date(entry.modified * 1000).toLocaleDateString() : '';
+
+        html += '<div class="file-item" ' +
+            (entry.is_dir ? 'onclick="navigateTo(\'' + escapeHtml(entry.path) + '\')"' : '') + '>' +
+            '<div class="file-icon">' + icon + '</div>' +
+            '<div class="file-info">' +
+            '<div class="file-name">' + escapeHtml(entry.name) + '</div>' +
+            '<div class="file-meta">' + size + ' ' + date + '</div>' +
+            '</div>' +
+            '<div class="file-actions">' +
+            (!entry.is_dir ? '<button class="btn btn-sm btn-ghost" onclick="downloadFile(\'' +
+                escapeHtml(entry.path) + '\',\'' + escapeHtml(entry.name) + '\')">&#11015; Baixar</button>' : '') +
+            '</div></div>';
+    }
+
+    if (!html) html = '<div style="padding:20px;color:var(--text-dim)">Diretório vazio</div>';
+    document.getElementById('fileList').innerHTML = html;
+}
+
+function downloadFile(path, name) {
+    const transferId = 'dl_' + Date.now();
+    sendMessage('file_download_request', {
+        path: path,
+        transfer_id: transferId
+    }, sessionId);
+}
+
+let downloadChunks = {};
+
+function handleFileChunk(data) {
+    const tid = data.transfer_id;
+    if (!downloadChunks[tid]) downloadChunks[tid] = [];
+    downloadChunks[tid].push(data.chunk);
+}
+
+function handleFileComplete(data) {
+    if (data.direction !== 'download') return;
+    const tid = data.transfer_id;
+    const chunks = downloadChunks[tid];
+    if (!chunks) return;
+    delete downloadChunks[tid];
+
+    const b64 = chunks.join('');
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    const filename = data.path ? data.path.split('/').pop() : 'download';
+    const blob = new Blob([bytes]);
+    const url  = URL.createObjectURL(blob);
+
+    // Adiciona link de download visível na barra de arquivos (funciona em todos os browsers)
+    const prog = document.getElementById('uploadProgress');
+    prog.style.display = 'block';
+    prog.innerHTML = '&#11015; Download pronto: <a href="' + url + '" download="' + escapeHtml(filename) +
+        '" style="color:var(--accent);font-weight:600" onclick="setTimeout(()=>{this.parentElement.style.display=\'none\'},1000)">' +
+        escapeHtml(filename) + ' — clique para salvar</a>';
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+function uint8ToBase64(bytes) {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+}
+
+async function uploadFiles(files) {
+    const CHUNK = 32768; // 32 KB — seguro para btoa
+    const prog = document.getElementById('uploadProgress');
+    for (const file of files) {
+        const destPath = (currentPath || '/tmp') + '/' + file.name;
+        const tid = 'ul_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+        prog.style.display = 'block';
+        prog.textContent = 'Enviando ' + file.name + '...';
+
+        sendMessage('file_upload_start', { path: destPath, transfer_id: tid, size: file.size }, sessionId);
+
+        const buf = await file.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let offset = 0;
+        while (offset < bytes.length) {
+            const slice = bytes.slice(offset, offset + CHUNK);
+            sendMessage('file_chunk', { transfer_id: tid, chunk: uint8ToBase64(slice), direction: 'upload' }, sessionId);
+            offset += CHUNK;
+            const pct = bytes.length ? Math.round(offset / bytes.length * 100) : 100;
+            prog.textContent = 'Enviando ' + file.name + ' — ' + Math.min(pct, 100) + '%';
+            await new Promise(r => setTimeout(r, 0));
+        }
+        sendMessage('file_complete', { transfer_id: tid, path: destPath, direction: 'upload' }, sessionId);
+        prog.textContent = '✔ ' + file.name + ' enviado para ' + destPath;
+        setTimeout(() => { prog.style.display = 'none'; refreshFiles(); }, 2500);
+    }
+    document.getElementById('uploadInput').value = '';
+}
+
+// ─── System Info ───
+
+function usageBar(pct, label, detail) {
+    const cls = pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : '';
+    return '<div class="usage-bar-wrap">' +
+        '<div class="usage-bar-label"><span>' + label + '</span><span>' + detail + '</span></div>' +
+        '<div class="usage-bar"><div class="usage-bar-fill ' + cls + '" style="width:' + pct + '%"></div></div>' +
+        '</div>';
+}
+
+function infoRow(label, value) {
+    return '<div class="info-row"><span class="info-label">' + label +
+        '</span><span class="info-value">' + (value || '<span style="color:var(--text-dim)">—</span>') + '</span></div>';
+}
+
+function renderSystemInfo(data) {
+    const ramUsedMb  = data.ram_used_mb  || 0;
+    const ramTotalMb = data.ram_total_mb || 0;
+    const ramPct     = data.ram_percent  || 0;
+    const ramLabel   = ramTotalMb >= 1024
+        ? (ramUsedMb/1024).toFixed(1) + ' GB / ' + (ramTotalMb/1024).toFixed(1) + ' GB'
+        : ramUsedMb + ' MB / ' + ramTotalMb + ' MB';
+
+    const diskPct   = data.disk_percent  || 0;
+    const diskLabel = (data.disk_used_gb || 0) + ' GB / ' + (data.disk_total_gb || 0) + ' GB';
+
+    const html =
+    '<div class="sysinfo-grid">' +
+
+    // ── Card: Sistema Operacional ──
+    '<div class="info-card">' +
+        '<div class="info-card-header"><span class="info-card-icon">&#128187;</span>' +
+        '<span class="info-card-title">Sistema Operacional</span></div>' +
+        infoRow('Distribuição', data.os_pretty  ? '<span class="info-badge">' + escapeHtml(data.os_pretty) + '</span>' : null) +
+        infoRow('Versão',       escapeHtml(data.os_version || '')) +
+        infoRow('Kernel',       escapeHtml(data.kernel     || '')) +
+        infoRow('Arquitetura',  escapeHtml(data.architecture || '')) +
+        infoRow('Uptime',       escapeHtml(data.uptime || '')) +
+    '</div>' +
+
+    // ── Card: Hardware ──
+    '<div class="info-card">' +
+        '<div class="info-card-header"><span class="info-card-icon">&#128421;</span>' +
+        '<span class="info-card-title">Hardware</span></div>' +
+        infoRow('Hostname', escapeHtml(data.hostname || '')) +
+        infoRow('CPUs',     (data.cpu_count || 0) + ' núcleos') +
+        usageBar(ramPct,  'RAM', ramLabel + ' (' + ramPct + '%)') +
+        usageBar(diskPct, 'Disco /', diskLabel + ' (' + diskPct + '%)') +
+    '</div>' +
+
+    // ── Card: Acesso ──
+    '<div class="info-card">' +
+        '<div class="info-card-header"><span class="info-card-icon">&#128100;</span>' +
+        '<span class="info-card-title">Acesso</span></div>' +
+        infoRow('Usuário do agente', escapeHtml(data.username || '')) +
+        infoRow('Python',            escapeHtml(data.python_version || '')) +
+    '</div>' +
+
+    '</div>';
+
+    const el = document.getElementById('sysinfoContent');
+    el.className = '';
+    el.innerHTML = html;
+}
+
+// ─── Machines List ───
+
+let allAgents = [];
+
+// Aplica preferências salvas ao iniciar
+(function() {
+    if (viewMode === 'list') {
+        document.getElementById('machinesList').classList.add('list-view');
+        document.getElementById('btnViewCard').classList.remove('active');
+        document.getElementById('btnViewList').classList.add('active');
+    }
+    // Aplica filtro de status salvo
+    ['all','online','offline'].forEach(f => {
+        document.getElementById('filter' + f.charAt(0).toUpperCase() + f.slice(1))
+            .classList.toggle('active', f === statusFilter);
+    });
+})();
+
+async function renderAgentList(onlineAgents) {
+    // Guarda último snapshot e incrementa geração para detectar renders stale
+    if (onlineAgents !== undefined) _lastOnlineAgents = onlineAgents;
+    const myGen = ++_renderGen;
+
+    // IDs dos agentes online (vindos do relay em tempo real)
+    const onlineIds = new Set((_lastOnlineAgents || []).map(a => a.agent_id));
+    const relayMap  = {};
+    (_lastOnlineAgents || []).forEach(a => relayMap[a.agent_id] = a);
+
+    // Busca lista completa do banco (inclui offline)
+    let dbAgents = [];
+    try {
+        const token = localStorage.getItem('auth_token');
+        const res   = await fetch('/api/agents', { headers: { 'Authorization': 'Bearer ' + token } });
+        if (res.ok) {
+            const data = await res.json();
+            dbAgents = Array.isArray(data) ? data : (data.agents || []);
+            // Aproveita para atualizar cache de nicknames
+            dbAgents.forEach(a => { if (a.agent_id && a.nickname) cachedNicknames[a.agent_id] = a.nickname; });
+        }
+    } catch(e) {}
+
+    // Descarta renderização stale (outra chamada mais recente já iniciou)
+    if (myGen !== _renderGen) return;
+
+    // Mescla: DB como base, relay sobrescreve dados em tempo real para os online
+    const merged = dbAgents.map(a => ({
+        ...a,
+        ...(relayMap[a.agent_id] || {}),
+        is_online: onlineIds.has(a.agent_id),
+        nickname: cachedNicknames[a.agent_id] !== undefined ? cachedNicknames[a.agent_id] : (a.nickname || '')
+    }));
+
+    // Agentes online que ainda não estão no banco (recém conectados)
+    (onlineAgents || []).forEach(a => {
+        if (!merged.find(x => x.agent_id === a.agent_id)) {
+            merged.push({ ...a, is_online: true, nickname: cachedNicknames[a.agent_id] || a.nickname || '' });
+        }
+    });
+
+    allAgents = merged;
+    const online = allAgents.filter(a => a.is_online).length;
+    document.getElementById('statOnline').textContent = online;
+    document.getElementById('statTotal').textContent  = allAgents.length;
+    filterMachines();
+}
+
+function setFilter(filter) {
+    statusFilter = filter;
+    localStorage.setItem('machines_filter', filter);
+    ['all','online','offline'].forEach(f => {
+        document.getElementById('filter' + f.charAt(0).toUpperCase() + f.slice(1))
+            .classList.toggle('active', f === filter);
+    });
+    filterMachines();
+}
+
+function setViewMode(mode) {
+    viewMode = mode;
+    localStorage.setItem('machines_view', mode);
+    const grid = document.getElementById('machinesList');
+    grid.classList.toggle('list-view', mode === 'list');
+    document.getElementById('btnViewCard').classList.toggle('active', mode === 'card');
+    document.getElementById('btnViewList').classList.toggle('active', mode === 'list');
+    renderCards(allAgents);
+}
+
+function filterMachines() {
+    const q = document.getElementById('machinesSearch').value.toLowerCase();
+    let filtered = allAgents;
+    if (statusFilter === 'online')  filtered = filtered.filter(a => a.is_online);
+    if (statusFilter === 'offline') filtered = filtered.filter(a => !a.is_online);
+    if (q) filtered = filtered.filter(a =>
+        (a.nickname||'').toLowerCase().includes(q) ||
+        (a.hostname||'').toLowerCase().includes(q) ||
+        (a.ip_address||'').toLowerCase().includes(q) ||
+        (a.os_type||'').toLowerCase().includes(q) ||
+        (a.username||'').toLowerCase().includes(q)
+    );
+    renderCards(filtered);
+}
+
+function renderCards(agents) {
+    const container = document.getElementById('machinesList');
+    if (!agents || !agents.length) {
+        container.innerHTML = '<div class="machines-empty"><span>&#128187;</span>Nenhuma máquina encontrada.</div>';
+        return;
+    }
+
+    const sorted = [...agents].sort((a, b) => (b.is_online ? 1 : 0) - (a.is_online ? 1 : 0));
+
+    let html = '';
+    for (const a of sorted) {
+        const osIcon = a.os_type === 'Windows' ? '🖥️' : a.os_type === 'Darwin' ? '🍎' : '🐧';
+        const name   = escapeHtml(a.nickname || a.hostname || a.agent_id);
+        const online = a.is_online;
+        const badge  = online
+            ? '<span class="mc-badge badge-on">● Online</span>'
+            : '<span class="mc-badge badge-off">Offline</span>';
+        const btnEdit = `<button class="btn-edit-mc" onclick="openEdit('${a.agent_id}','${name.replace(/'/g,"\\'")}')">&#9998; Editar</button>`;
+        const agentVer = a.version || '';
+        const needsUpdate = online && agentVer && latestAgentVersion && agentVer !== latestAgentVersion;
+        const justUpdated = agentUpdateSuccess.has(a.agent_id) && !needsUpdate && agentVer === latestAgentVersion;
+        // Se acabou de atualizar, agenda remoção do badge após 10s (apenas na primeira renderização)
+        if (justUpdated && agentUpdateSuccess.get(a.agent_id) === null) {
+            const t = setTimeout(() => { agentUpdateSuccess.delete(a.agent_id); renderAgentList(undefined); }, 10000);
+            agentUpdateSuccess.set(a.agent_id, t);
+        }
+        const btnUpdate = justUpdated
+            ? `<span class="btn-updated-mc">&#10003; Atualizado para v${latestAgentVersion}</span>`
+            : needsUpdate
+                ? `<button class="btn-update-mc" id="upd-${a.agent_id}" onclick="updateAgent('${a.agent_id}',this)">&#8593; Atualizar para v${latestAgentVersion}</button>`
+                : '';
+        const footer = online
+            ? `${btnUpdate}${btnEdit}<button class="btn-connect" onclick="openConnectPrompt('${a.agent_id}','${name}')">&#9654; Conectar</button>`
+            : `${btnEdit}<span style="font-size:12px;color:var(--text-dim)">Indisponível</span>`;
+
+        html += `
+        <div class="machine-card${online ? '' : ' offline'}">
+            <div class="mc-top">
+                <div class="mc-icon">${osIcon}</div>
+                <div class="mc-info">
+                    <div class="mc-name">${name}</div>
+                    <div class="mc-host">${escapeHtml(a.hostname || a.agent_id)}</div>
+                </div>
+                ${badge}
+            </div>
+            <hr class="mc-divider">
+            <div class="mc-details">
+                <div class="mc-detail">
+                    <span class="mc-detail-label">Sistema</span>
+                    <span class="mc-detail-value">${escapeHtml(a.os_type||'—')} ${escapeHtml(a.os_version||'')}</span>
+                </div>
+                <div class="mc-detail">
+                    <span class="mc-detail-label">Usuário</span>
+                    <span class="mc-detail-value">${escapeHtml(a.username||'—')}</span>
+                </div>
+                <div class="mc-detail">
+                    <span class="mc-detail-label">IP</span>
+                    <span class="mc-detail-value">${escapeHtml(a.ip_address||'—')}</span>
+                </div>
+                <div class="mc-detail">
+                    <span class="mc-detail-label">Agente</span>
+                    <span class="mc-detail-value" style="${needsUpdate ? 'color:var(--warning)' : ''}">${agentVer ? 'v' + agentVer + (needsUpdate ? ' ⚠' : '') : '—'}</span>
+                </div>
+            </div>
+            <div class="mc-footer">${footer}</div>
+        </div>`;
+    }
+    container.innerHTML = html;
+}
+
+function openConnectPrompt(agentId, name) {
+    document.getElementById('agentId').value = agentId;
+    document.getElementById('connectPromptTitle').textContent = 'Conectar';
+    document.getElementById('connectPromptMeta').textContent  = name;
+    document.getElementById('agentPassword').value = '';
+    document.getElementById('loginError').style.display = 'none';
+    document.getElementById('connectPrompt').classList.remove('hidden');
+    setTimeout(() => document.getElementById('agentPassword').focus(), 50);
+}
+
+function closeConnectPrompt() {
+    document.getElementById('connectPrompt').classList.add('hidden');
+}
+
+// ─── Tabs ───
+
+function switchTab(tab) {
+    document.querySelectorAll('.toolbar .tab').forEach(t => t.classList.remove('active'));
+    document.querySelector('[data-tab="' + tab + '"]').classList.add('active');
+
+    document.querySelectorAll('.screen-panel,.terminal-panel,.console-panel,.files-panel,.sysinfo-panel')
+        .forEach(p => p.classList.remove('active'));
+
+    document.getElementById(tab + 'Panel').classList.add('active');
+
+    if (tab === 'terminal') {
+        if (!term) {
+            initTerminal();
+        } else {
+            setTimeout(() => { fitAddon.fit(); term.focus(); }, 30);
+        }
+    } else if (tab === 'console') {
+        if (!vcterm) {
+            initVConsole(document.getElementById('ttySelect').value);
+        } else {
+            setTimeout(() => { vcFitAddon.fit(); vcterm.focus(); }, 30);
+        }
+    } else if (tab === 'files') {
+        if (!currentPath) navigateTo('');
+    } else if (tab === 'sysinfo') {
+        sendMessage('system_info_request', {}, sessionId);
+    }
+}
+
+// ─── Config ───
+
+function changeQuality(q) {
+    sendMessage('screen_config', { quality: parseInt(q) }, sessionId);
+}
+
+function changeFps(f) {
+    sendMessage('screen_config', { fps: parseInt(f) }, sessionId);
+}
+
+// ─── UI Helpers ───
+
+function showLogin() {
+    document.getElementById('loginPanel').style.display = 'flex';
+    document.getElementById('mainLayout').style.display = 'none';
+    closeConnectPrompt();
+    // Destrói terminais ao desconectar
+    if (term)   { term.dispose();   term   = null; fitAddon   = null; }
+    if (vcterm) { vcterm.dispose(); vcterm = null; vcFitAddon = null; }
+    document.getElementById('xtermContainer').innerHTML   = '';
+    document.getElementById('vconsoleContainer').innerHTML = '';
+    currentPath = '';
+}
+
+function showMain() {
+    document.getElementById('loginPanel').style.display = 'none';
+    document.getElementById('mainLayout').style.display = 'flex';
+    closeConnectPrompt();
+}
+
+function showError(msg) {
+    const el = document.getElementById('loginError');
+    el.textContent = msg;
+    el.style.display = 'block';
+}
+
+function hideError() {
+    document.getElementById('loginError').style.display = 'none';
+}
+
+function setButtonLoading(loading) {
+    // botão de conectar removido da UI — função mantida para compatibilidade
+}
+
+function updateStatus(text, connected) {
+    document.getElementById('statusText').textContent = text;
+    const dot = document.getElementById('statusDot');
+    if (connected) dot.classList.add('connected');
+    else dot.classList.remove('connected');
+    // Sincroniza indicador do painel de máquinas
+    const dot2  = document.getElementById('statusDot2');
+    const text2 = document.getElementById('statusText2');
+    if (dot2)  { if (connected) dot2.classList.add('connected'); else dot2.classList.remove('connected'); }
+    if (text2) text2.textContent = text;
+}
+
+function sendMessage(type, data, sid) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+        type: type,
+        data: data || {},
+        session_id: sid || null,
+        timestamp: Date.now() / 1000
+    }));
+}
+
+function escapeHtml(text) {
+    const d = document.createElement('div');
+    d.textContent = text || '';
+    return d.innerHTML;
+}
+
+function formatSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function getFileIcon(name) {
+    const ext = name.split('.').pop().toLowerCase();
+    const icons = {
+        pdf: '&#128196;', doc: '&#128196;', docx: '&#128196;', txt: '&#128196;',
+        jpg: '&#128247;', jpeg: '&#128247;', png: '&#128247;', gif: '&#128247;',
+        mp3: '&#127925;', wav: '&#127925;', mp4: '&#127909;', avi: '&#127909;',
+        zip: '&#128230;', rar: '&#128230;', '7z': '&#128230;', tar: '&#128230;',
+        py: '&#128013;', js: '&#9881;', html: '&#127760;', css: '&#127912;',
+        exe: '&#9881;', sh: '&#9881;', bat: '&#9881;',
+    };
+    return icons[ext] || '&#128196;';
+}
+
+// ─── Editar máquina ───
+
+function openEdit(agentId, currentName) {
+    document.getElementById('editAgentId').value  = agentId;
+    document.getElementById('editNickname').value = currentName;
+    document.getElementById('editError').style.display = 'none';
+    document.getElementById('editModal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('editNickname').focus(), 50);
+}
+
+function closeEdit() {
+    document.getElementById('editModal').classList.add('hidden');
+}
+
+async function saveEdit() {
+    const agentId  = document.getElementById('editAgentId').value;
+    const nickname = document.getElementById('editNickname').value.trim();
+    const errEl    = document.getElementById('editError');
+    if (!nickname) { errEl.textContent = 'Nome obrigatório'; errEl.style.display = 'block'; return; }
+
+    const token = localStorage.getItem('auth_token');
+    try {
+        const res = await fetch('/api/agents/' + agentId + '/nickname', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+            body: JSON.stringify({ nickname })
+        });
+        const data = await res.json();
+        if (data.ok) {
+            // Persiste no cache local — sobrevive a atualizações do relay
+            cachedNicknames[agentId] = nickname;
+            closeEdit();
+            // Atualiza o array local e re-renderiza os cards sem recarregar
+            const idx = allAgents.findIndex(a => a.agent_id === agentId);
+            if (idx !== -1) {
+                allAgents[idx].nickname = nickname;
+                renderCards(allAgents);
+            }
+        } else {
+            errEl.textContent = data.error || 'Erro ao salvar';
+            errEl.style.display = 'block';
+        }
+    } catch (e) {
+        errEl.textContent = 'Erro de conexão';
+        errEl.style.display = 'block';
+    }
+}
+
+// ─── Atualização de Agente ───
+
+function updateAgent(agentId, btn) {
+    if (!confirm('Enviar comando de atualização para esta máquina?\nO agente será reiniciado automaticamente.')) return;
+    btn.classList.add('updating');
+    btn.textContent = '⏳ Atualizando...';
+    // Registra para exibir badge de sucesso quando o agente reconectar
+    agentUpdateSuccess.set(agentId, null);
+    sendMessage('update_agent', {
+        agent_id:  agentId,
+        panel_url: window.location.origin,
+    });
+}
+
+// ─── Sidebar / Seções ───
+
+function showSection(section) {
+    // Não muda seção quando conectado a um agente
+    if (sessionId) return;
+
+    // Atualiza sidebar items
+    document.querySelectorAll('.sidebar-item[data-section]').forEach(el => {
+        el.classList.toggle('active', el.dataset.section === section);
+    });
+
+    const loginPanel  = document.getElementById('loginPanel');
+    const usersSection = document.getElementById('usersSection');
+
+    if (section === 'machines') {
+        loginPanel.style.display  = 'flex';
+        usersSection.classList.add('hidden');
+    } else if (section === 'users') {
+        loginPanel.style.display  = 'none';
+        usersSection.classList.remove('hidden');
+        loadUsers();
+    }
+}
+
+// ─── Usuários ───
+
+async function loadUsers() {
+    const token = localStorage.getItem('auth_token');
+    const tbody = document.getElementById('usersTableBody');
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:30px">Carregando...</td></tr>';
+    try {
+        const res  = await fetch('/api/users', { headers: { 'Authorization': 'Bearer ' + token } });
+        const data = await res.json();
+        if (!res.ok) { tbody.innerHTML = '<tr><td colspan="6" style="color:var(--danger);padding:20px">' + (data.error||'Erro') + '</td></tr>'; return; }
+        const users = Array.isArray(data) ? data : (data.users || []);
+        if (!users.length) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:30px">Nenhum usuário</td></tr>'; return; }
+        tbody.innerHTML = users.map(u => `
+            <tr>
+                <td>${escapeHtml(u.email||'')}</td>
+                <td>${escapeHtml(u.display_name||'')}</td>
+                <td><span class="role-badge role-${u.role||'viewer'}">${escapeHtml(u.role||'viewer')}</span></td>
+                <td>${u.is_active ? '<span class="active-badge">Ativo</span>' : '<span class="inactive-badge">Inativo</span>'}</td>
+                <td style="color:var(--text-dim);font-size:12px">${u.last_login ? new Date(u.last_login).toLocaleString('pt-BR') : '—'}</td>
+                <td><div class="table-actions">
+                    <button class="btn btn-sm btn-ghost" onclick="openUserModal(${JSON.stringify(u).replace(/"/g,'&quot;')})">Editar</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id})">Excluir</button>
+                </div></td>
+            </tr>`).join('');
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="6" style="color:var(--danger);padding:20px">Erro de conexão</td></tr>';
+    }
+}
+
+function openUserModal(user) {
+    const isEdit = !!user;
+    document.getElementById('userModalTitle').textContent = isEdit ? 'Editar Usuário' : 'Novo Usuário';
+    document.getElementById('userModalId').value     = isEdit ? user.id : '';
+    document.getElementById('userModalEmail').value  = isEdit ? (user.email||'') : '';
+    document.getElementById('userModalName').value   = isEdit ? (user.display_name||'') : '';
+    document.getElementById('userModalPass').value   = '';
+    document.getElementById('userModalRole').value   = isEdit ? (user.role||'viewer') : 'viewer';
+    document.getElementById('userModalActive').checked = isEdit ? !!user.is_active : true;
+    document.getElementById('userModalError').style.display = 'none';
+    document.getElementById('userModalPassHint').style.display = isEdit ? 'inline' : 'none';
+    document.getElementById('userModal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('userModalEmail').focus(), 50);
+}
+
+function closeUserModal() {
+    document.getElementById('userModal').classList.add('hidden');
+}
+
+async function saveUserModal() {
+    const token  = localStorage.getItem('auth_token');
+    const id     = document.getElementById('userModalId').value;
+    const email  = document.getElementById('userModalEmail').value.trim();
+    const name   = document.getElementById('userModalName').value.trim();
+    const pass   = document.getElementById('userModalPass').value;
+    const role   = document.getElementById('userModalRole').value;
+    const active = document.getElementById('userModalActive').checked;
+    const errEl  = document.getElementById('userModalError');
+    errEl.style.display = 'none';
+
+    if (!email) { errEl.textContent = 'E-mail obrigatório'; errEl.style.display = 'block'; return; }
+    if (!name)  { errEl.textContent = 'Nome obrigatório';   errEl.style.display = 'block'; return; }
+    if (!id && !pass) { errEl.textContent = 'Senha obrigatória para novo usuário'; errEl.style.display = 'block'; return; }
+
+    const body = { email, display_name: name, role, is_active: active };
+    if (pass) body.password = pass;
+
+    try {
+        const url    = id ? '/api/users/' + id : '/api/users';
+        const method = id ? 'PUT' : 'POST';
+        const res    = await fetch(url, {
+            method,
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.ok || res.ok) {
+            closeUserModal();
+            loadUsers();
+        } else {
+            errEl.textContent = data.error || 'Erro ao salvar';
+            errEl.style.display = 'block';
+        }
+    } catch(e) {
+        errEl.textContent = 'Erro de conexão';
+        errEl.style.display = 'block';
+    }
+}
+
+async function deleteUser(userId) {
+    if (!confirm('Excluir este usuário?')) return;
+    const token = localStorage.getItem('auth_token');
+    try {
+        const res  = await fetch('/api/users/' + userId, {
+            method: 'DELETE',
+            headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const data = await res.json();
+        if (data.ok || res.ok) {
+            loadUsers();
+        } else {
+            alert(data.error || 'Erro ao excluir');
+        }
+    } catch(e) {
+        alert('Erro de conexão');
+    }
+}
+
+// Heartbeat
+setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        sendMessage('ping');
+    }
+}, 15000);
+
+// ─── Autenticação Admin ───
+
+async function doAdminLogin() {
+    const email    = document.getElementById('authEmail').value.trim();
+    const password = document.getElementById('authPass').value;
+    const errEl    = document.getElementById('authError');
+    const btn      = document.getElementById('btnAdminLogin');
+
+    if (!email || !password) {
+        errEl.textContent = 'Preencha e-mail e senha.';
+        errEl.style.display = 'block';
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Autenticando...';
+    errEl.style.display = 'none';
+
+    try {
+        const res  = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+            localStorage.setItem('auth_token', data.token);
+            localStorage.setItem('auth_user',  data.user);
+            showAuthenticatedUI(data.user);
+        } else {
+            errEl.textContent = data.error || 'Credenciais inválidas.';
+            errEl.style.display = 'block';
+        }
+    } catch (e) {
+        errEl.textContent = 'Erro ao conectar com o servidor.';
+        errEl.style.display = 'block';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Entrar';
+    }
+}
+
+function showAuthenticatedUI(userName) {
+    document.getElementById('authOverlay').classList.add('hidden');
+    document.getElementById('headerUser').style.display = 'flex';
+    document.getElementById('headerUserName').textContent = userName;
+    document.getElementById('sidebar').classList.remove('hidden');
+    // Carrega versão mais recente do agente e nicknames
+    fetch('/api/agent/version').then(r => r.json()).then(d => { latestAgentVersion = d.version || ''; }).catch(() => {});
+    fetchNicknames();
+    // Conecta ao relay automaticamente após o login
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        connectToRelay();
+    }
+}
+
+async function fetchNicknames() {
+    const token = localStorage.getItem('auth_token');
+    if (!token) return;
+    try {
+        const res = await fetch('/api/agents', { headers: { 'Authorization': 'Bearer ' + token } });
+        if (!res.ok) return;
+        const data = await res.json();
+        const list = data.agents || data || [];
+        list.forEach(a => {
+            if (a.agent_id && a.nickname) cachedNicknames[a.agent_id] = a.nickname;
+        });
+        // Re-renderiza cards com nicknames do banco
+        if (allAgents.length) renderAgentList(allAgents);
+    } catch (e) {}
+}
+
+function adminLogout() {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+    cachedNicknames = {};
+    if (ws) { ws.close(); ws = null; }
+    document.getElementById('authOverlay').classList.remove('hidden');
+    document.getElementById('headerUser').style.display = 'none';
+    document.getElementById('sidebar').classList.add('hidden');
+    showLogin();
+}
+
+// Verifica autenticação ao carregar a página
+(async function checkAuth() {
+    const token = localStorage.getItem('auth_token');
+    const user  = localStorage.getItem('auth_user');
+    if (!token || !user) return; // overlay já está visível
+
+    try {
+        const res = await fetch('/api/verify', {
+            headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (res.ok) {
+            showAuthenticatedUI(user);
+        } else {
+            localStorage.removeItem('auth_token');
+            localStorage.removeItem('auth_user');
+        }
+    } catch (e) {
+        // servidor indisponível — deixa o overlay aparecer
+    }
+})();
+</script>
+</body>
+</html>
