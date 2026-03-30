@@ -729,6 +729,10 @@ function handleMessage(msg) {
         case 'connect_accept':
             sessionId = msg.data.session_id;
             currentAgentId = msg.data.agent_id;
+            // Reset estado do browser a cada nova sessão
+            browserStarted = false;
+            browserMode = null;
+            browserPendingUrl = null;
             showMain();
             sendMessage('screen_request', { action: 'start' }, sessionId);
             sendMessage('system_info_request', {}, sessionId);
@@ -1908,7 +1912,14 @@ let browserImg = new Image();
 
 function browserGo() {
     const url = document.getElementById('browserUrl').value.trim();
-    if (!url || !sessionId) return;
+    if (!url) {
+        document.getElementById('browserStatusBar').textContent = 'Digite uma URL primeiro.';
+        return;
+    }
+    if (!sessionId) {
+        document.getElementById('browserStatusBar').textContent = 'Sem sessão ativa — conecte a um agente primeiro.';
+        return;
+    }
 
     document.getElementById('browserStatusBar').textContent = 'Aguardando agente...';
 
