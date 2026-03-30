@@ -137,7 +137,10 @@ class RelayServer:
                    MessageType.SHELL_OUTPUT.value,
                    MessageType.FILE_LIST_RESPONSE.value,
                    MessageType.SYSTEM_INFO.value,
-                   MessageType.CONSOLE_FRAME.value):
+                   MessageType.CONSOLE_FRAME.value,
+                   "browser_frame",
+                   "browser_html",
+                   "browser_status"):
             await self.relay_to_viewer(ws, msg)
         # Relay: viewer -> agent
         elif t in (MessageType.SCREEN_REQUEST.value,
@@ -154,7 +157,13 @@ class RelayServer:
                    MessageType.SYSTEM_INFO_REQUEST.value,
                    MessageType.CONSOLE_START.value,
                    MessageType.CONSOLE_INPUT.value,
-                   MessageType.CONSOLE_STOP.value):
+                   MessageType.CONSOLE_STOP.value,
+                   "browser_start",
+                   "browser_navigate",
+                   "browser_input",
+                   "browser_scroll",
+                   "browser_resize",
+                   "browser_stop"):
             await self.relay_to_agent(ws, msg)
         # Relay: ambos
         elif t in (MessageType.SHELL_STOP.value,

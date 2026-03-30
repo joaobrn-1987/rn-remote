@@ -30,7 +30,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.2.1"
+AGENT_VERSION = "1.3.0"
 
 import websockets
 
@@ -395,6 +395,141 @@ class InputController:
             logger.debug(f"Keyboard: {e}")
 
 
+# ─── Headless Browser (Chromium via Playwright) ─────────────────────────────
+
+class HeadlessBrowser:
+    """Controla Chromium headless para renderizar páginas web remotamente."""
+
+    def __init__(self):
+        self.running = False
+        self._browser = None
+        self._page = None
+        self._pw = None
+        self._playwright = None
+        self.current_url = ""
+        self.width = 1280
+        self.height = 720
+
+    async def start(self, width: int = 1280, height: int = 720):
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            raise RuntimeError(
+                "playwright não instalado. Execute:\n"
+                "  pip install playwright && playwright install chromium --with-deps"
+            )
+        self.width = width
+        self.height = height
+        self._playwright = async_playwright()
+        self._pw = await self._playwright.start()
+        self._browser = await self._pw.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-dev-shm-usage',
+                  '--disable-gpu', '--disable-software-rasterizer'],
+        )
+        self._page = await self._browser.new_page(
+            viewport={"width": width, "height": height}
+        )
+        self.running = True
+        logger.info(f"Headless browser iniciado ({width}x{height})")
+
+    async def navigate(self, url: str, timeout: int = 15000) -> dict:
+        if not self._page:
+            return {"error": "Browser não iniciado"}
+        try:
+            if not url.startswith(("http://", "https://")):
+                url = "http://" + url
+            self.current_url = url
+            response = await self._page.goto(url, timeout=timeout,
+                                              wait_until="domcontentloaded")
+            title = await self._page.title()
+            return {"url": self._page.url, "title": title,
+                    "status": response.status if response else 0}
+        except Exception as e:
+            return {"url": url, "error": str(e)}
+
+    async def screenshot(self, quality: int = 60) -> bytes:
+        if not self._page:
+            return b""
+        try:
+            return await self._page.screenshot(type="jpeg", quality=quality,
+                                                full_page=False)
+        except Exception:
+            return b""
+
+    async def click(self, x: int, y: int):
+        if self._page:
+            try:
+                await self._page.mouse.click(x, y)
+            except Exception:
+                pass
+
+    async def scroll(self, x: int, y: int, delta_x: int, delta_y: int):
+        if self._page:
+            try:
+                await self._page.mouse.move(x, y)
+                await self._page.mouse.wheel(delta_x, delta_y)
+            except Exception:
+                pass
+
+    async def type_text(self, text: str):
+        if self._page:
+            try:
+                await self._page.keyboard.type(text)
+            except Exception:
+                pass
+
+    async def press_key(self, key: str):
+        if self._page:
+            try:
+                await self._page.keyboard.press(key)
+            except Exception:
+                pass
+
+    async def resize(self, width: int, height: int):
+        if self._page:
+            self.width = width
+            self.height = height
+            try:
+                await self._page.set_viewport_size({"width": width, "height": height})
+            except Exception:
+                pass
+
+    async def go_back(self):
+        if self._page:
+            try:
+                await self._page.go_back(timeout=5000)
+            except Exception:
+                pass
+
+    async def go_forward(self):
+        if self._page:
+            try:
+                await self._page.go_forward(timeout=5000)
+            except Exception:
+                pass
+
+    async def reload(self):
+        if self._page:
+            try:
+                await self._page.reload(timeout=10000)
+            except Exception:
+                pass
+
+    async def stop(self):
+        self.running = False
+        for obj, method in [
+            (self._page, 'close'), (self._browser, 'close'), (self._pw, 'stop')
+        ]:
+            if obj:
+                try:
+                    await getattr(obj, method)()
+                except Exception:
+                    pass
+        self._page = self._browser = self._pw = self._playwright = None
+        logger.info("Headless browser encerrado")
+
+
 # ─── Agente ────────────────────────────────────────────────────────────────────
 
 class LinuxAgent:
@@ -419,6 +554,10 @@ class LinuxAgent:
         self.input_ctrl  = InputController()  if HAS_INPUT  else None
         self._screen_task: asyncio.Task | None = None
         self._screen_active = False
+        self.browser = None
+        self._browser_stream_task: asyncio.Task | None = None
+        self._browser_fps = 5
+        self._browser_quality = 60
 
     # ── Loop principal ─────────────────────────────────────────────────────────
 
@@ -503,6 +642,7 @@ class LinuxAgent:
         elif t == "disconnect":
             logger.info("Viewer desconectou")
             self._stop_shell()
+            await self._handle_browser_stop()
             self.session_id = None
 
         elif t == "shell_start":
@@ -601,11 +741,132 @@ class LinuxAgent:
                     code=data.get("code", ""),
                 )
 
+        elif t == "browser_start":
+            await self._handle_browser_start(data)
+
+        elif t == "browser_navigate":
+            await self._handle_browser_navigate(data)
+
+        elif t == "browser_input":
+            await self._handle_browser_input(data)
+
+        elif t == "browser_scroll":
+            await self._handle_browser_scroll(data)
+
+        elif t == "browser_resize":
+            await self._handle_browser_resize(data)
+
+        elif t == "browser_stop":
+            await self._handle_browser_stop()
+
         elif t == "update_agent":
             await self._handle_update(data)
 
         elif t == "pong":
             pass  # heartbeat ok
+
+    # ── Web Browser (Headless) ──────────────────────────────────────────────────
+
+    async def _handle_browser_start(self, data: dict):
+        await self._handle_browser_stop()
+        width = data.get("width", 1280)
+        height = data.get("height", 720)
+        self._browser_fps = data.get("fps", 5)
+        self._browser_quality = data.get("quality", 60)
+        self.browser = HeadlessBrowser()
+        try:
+            await self.browser.start(width, height)
+            await self._send({
+                "type": "browser_status",
+                "data": {"status": "started", "mode": "headless",
+                         "width": width, "height": height},
+                "session_id": self.session_id, "timestamp": time.time(),
+            })
+            self._browser_stream_task = asyncio.create_task(self._browser_stream_loop())
+        except Exception as e:
+            logger.error(f"Erro iniciando browser: {e}")
+            await self._send({
+                "type": "browser_status",
+                "data": {"status": "error", "error": str(e)},
+                "session_id": self.session_id, "timestamp": time.time(),
+            })
+            self.browser = None
+
+    async def _handle_browser_navigate(self, data: dict):
+        if not self.browser or not self.browser.running:
+            return
+        url = data.get("url", "")
+        action = data.get("action", "goto")
+        if action == "back":
+            await self.browser.go_back()
+        elif action == "forward":
+            await self.browser.go_forward()
+        elif action == "reload":
+            await self.browser.reload()
+        elif url:
+            result = await self.browser.navigate(url)
+            await self._send({
+                "type": "browser_status",
+                "data": {"status": "navigated", **result},
+                "session_id": self.session_id, "timestamp": time.time(),
+            })
+
+    async def _handle_browser_input(self, data: dict):
+        if not self.browser or not self.browser.running:
+            return
+        action = data.get("action", "")
+        if action == "click":
+            await self.browser.click(data.get("x", 0), data.get("y", 0))
+        elif action == "type":
+            await self.browser.type_text(data.get("text", ""))
+        elif action == "key":
+            await self.browser.press_key(data.get("key", ""))
+
+    async def _handle_browser_scroll(self, data: dict):
+        if not self.browser or not self.browser.running:
+            return
+        await self.browser.scroll(data.get("x", 0), data.get("y", 0),
+                                   data.get("dx", 0), data.get("dy", 0))
+
+    async def _handle_browser_resize(self, data: dict):
+        if not self.browser or not self.browser.running:
+            return
+        self._browser_fps = data.get("fps", self._browser_fps)
+        self._browser_quality = data.get("quality", self._browser_quality)
+        await self.browser.resize(data.get("width", 1280), data.get("height", 720))
+
+    async def _handle_browser_stop(self):
+        if self._browser_stream_task:
+            self._browser_stream_task.cancel()
+            try:
+                await self._browser_stream_task
+            except asyncio.CancelledError:
+                pass
+            self._browser_stream_task = None
+        if self.browser:
+            await self.browser.stop()
+            self.browser = None
+
+    async def _browser_stream_loop(self):
+        prev_frame = None
+        while self.browser and self.browser.running:
+            try:
+                frame_bytes = await self.browser.screenshot(quality=self._browser_quality)
+                if frame_bytes and frame_bytes != prev_frame:
+                    frame_b64 = base64.b64encode(frame_bytes).decode('ascii')
+                    await self._send({
+                        "type": "browser_frame",
+                        "data": {"frame": frame_b64, "url": self.browser.current_url,
+                                 "width": self.browser.width, "height": self.browser.height},
+                        "session_id": self.session_id, "timestamp": time.time(),
+                    })
+                    prev_frame = frame_bytes
+                await asyncio.sleep(1.0 / self._browser_fps)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Erro browser stream: {e}")
+                await asyncio.sleep(1)
 
     # ── Auto-atualização ────────────────────────────────────────────────────────
 

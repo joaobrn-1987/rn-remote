@@ -100,6 +100,19 @@
         .file-actions { display:flex; gap:4px; opacity:0; transition:opacity .15s; }
         .file-item:hover .file-actions { opacity:1; }
 
+        /* Browser Panel */
+        .browser-panel { display:none; flex:1; flex-direction:column; background:var(--bg-primary); overflow:hidden; }
+        .browser-panel.active { display:flex; }
+        .browser-toolbar { display:flex; align-items:center; gap:6px; padding:8px 12px; background:var(--bg-secondary); border-bottom:1px solid var(--border); }
+        .browser-toolbar button { padding:6px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; color:var(--text); cursor:pointer; font-size:14px; }
+        .browser-toolbar button:hover { border-color:var(--text-dim); }
+        .browser-toolbar input { flex:1; padding:8px 12px; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:14px; outline:none; }
+        .browser-toolbar input:focus { border-color:var(--accent); }
+        .browser-view { flex:1; position:relative; overflow:hidden; background:#fff; }
+        .browser-view canvas { width:100%; height:100%; cursor:default; }
+        .browser-view iframe { width:100%; height:100%; border:none; }
+        .browser-status-bar { padding:4px 12px; background:var(--bg-secondary); border-top:1px solid var(--border); font-size:11px; color:var(--text-dim); }
+
         /* System Info */
         .sysinfo-panel { display:none; flex:1; padding:20px 24px; overflow-y:auto; background:var(--bg-primary); }
         .sysinfo-panel.active { display:block; }
@@ -426,6 +439,7 @@
         <div class="tab" data-tab="console" onclick="switchTab('console')">&#128421; Console TTY</div>
         <div class="tab" data-tab="files" onclick="switchTab('files')">&#128193; Arquivos</div>
         <div class="tab" data-tab="sysinfo" onclick="switchTab('sysinfo')">&#9881; Sistema</div>
+        <div class="tab" data-tab="browser" onclick="switchTab('browser')">&#127760; Web Browser</div>
         <div class="spacer"></div>
         <select id="monitorSelect" onchange="changeMonitor(this.value)" style="display:none">
             <option value="1">Monitor 1</option>
@@ -497,6 +511,27 @@
     <!-- System Info -->
     <div class="sysinfo-panel" id="sysinfoPanel">
         <div id="sysinfoContent" class="sysinfo-loading">&#9881; Carregando informações...</div>
+    </div>
+
+    <!-- Web Browser -->
+    <div class="browser-panel" id="browserPanel">
+        <div class="browser-toolbar">
+            <button onclick="browserBack()" title="Voltar">&#9664;</button>
+            <button onclick="browserForward()" title="Avançar">&#9654;</button>
+            <button onclick="browserReload()" title="Recarregar">&#8635;</button>
+            <input type="text" id="browserUrl" placeholder="http://localhost:3000"
+                   onkeydown="if(event.key==='Enter')browserGo()">
+            <button onclick="browserGo()" class="btn btn-sm btn-primary">Ir</button>
+            <button onclick="browserStop()" class="btn btn-sm btn-danger">Parar</button>
+        </div>
+        <div class="browser-view" id="browserView">
+            <canvas id="browserCanvas" style="display:none"></canvas>
+            <iframe id="browserIframe" style="display:none" sandbox="allow-same-origin allow-scripts allow-forms"></iframe>
+            <div id="browserPlaceholder" style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;font-size:16px;">
+                Digite uma URL e clique em "Ir" para navegar
+            </div>
+        </div>
+        <div class="browser-status-bar" id="browserStatusBar">Pronto</div>
     </div>
 </div>
 
@@ -670,6 +705,8 @@ function disconnect() {
         sendMessage('disconnect', { session_id: sessionId }, sessionId);
     }
     sessionId = null;
+    browserStarted = false;
+    browserMode = null;
     showLogin();
 }
 
@@ -738,6 +775,18 @@ function handleMessage(msg) {
 
         case 'error':
             showError(msg.data.message || 'Erro desconhecido');
+            break;
+
+        case 'browser_frame':
+            handleBrowserFrame(msg.data);
+            break;
+
+        case 'browser_html':
+            handleBrowserHtml(msg.data);
+            break;
+
+        case 'browser_status':
+            handleBrowserStatus(msg.data);
             break;
 
         case 'pong':
@@ -1393,7 +1442,7 @@ function switchTab(tab) {
     document.querySelectorAll('.toolbar .tab').forEach(t => t.classList.remove('active'));
     document.querySelector('[data-tab="' + tab + '"]').classList.add('active');
 
-    document.querySelectorAll('.screen-panel,.terminal-panel,.console-panel,.files-panel,.sysinfo-panel')
+    document.querySelectorAll('.screen-panel,.terminal-panel,.console-panel,.files-panel,.sysinfo-panel,.browser-panel')
         .forEach(p => p.classList.remove('active'));
 
     document.getElementById(tab + 'Panel').classList.add('active');
@@ -1834,6 +1883,156 @@ function adminLogout() {
         // servidor indisponível — deixa o overlay aparecer
     }
 })();
+
+// ─── Web Browser ─────────────────────────────────────────────────────────────
+
+let browserMode = null;  // 'headless' ou 'proxy'
+let browserStarted = false;
+let browserCanvas = null;
+let browserCtx = null;
+let browserImg = new Image();
+
+(function browserInit() {
+    browserCanvas = document.getElementById('browserCanvas');
+    browserCtx = browserCanvas.getContext('2d');
+})();
+
+function browserGo() {
+    const url = document.getElementById('browserUrl').value.trim();
+    if (!url || !sessionId) return;
+
+    document.getElementById('browserStatusBar').textContent = 'Carregando: ' + url;
+
+    if (!browserStarted) {
+        const view = document.getElementById('browserView');
+        sendMessage('browser_start', {
+            width: view.clientWidth || 1280,
+            height: view.clientHeight || 720,
+            fps: 5,
+            quality: 60,
+        }, sessionId);
+        browserStarted = true;
+    }
+
+    sendMessage('browser_navigate', { url: url, action: 'goto' }, sessionId);
+}
+
+function browserBack() {
+    if (browserMode === 'headless') sendMessage('browser_navigate', { action: 'back' }, sessionId);
+}
+
+function browserForward() {
+    if (browserMode === 'headless') sendMessage('browser_navigate', { action: 'forward' }, sessionId);
+}
+
+function browserReload() {
+    if (browserMode === 'headless') {
+        sendMessage('browser_navigate', { action: 'reload' }, sessionId);
+    } else if (browserMode === 'proxy') {
+        browserGo();
+    }
+}
+
+function browserStop() {
+    sendMessage('browser_stop', {}, sessionId);
+    browserStarted = false;
+    browserMode = null;
+    document.getElementById('browserCanvas').style.display = 'none';
+    document.getElementById('browserIframe').style.display = 'none';
+    document.getElementById('browserPlaceholder').style.display = 'flex';
+    document.getElementById('browserStatusBar').textContent = 'Parado';
+}
+
+function handleBrowserStatus(data) {
+    const status = data.status;
+    if (status === 'started') {
+        browserMode = data.mode;
+        document.getElementById('browserStatusBar').textContent =
+            'Browser iniciado (modo: ' + browserMode + ')';
+    } else if (status === 'navigated') {
+        document.getElementById('browserStatusBar').textContent = data.title || data.url || '';
+        if (data.url) document.getElementById('browserUrl').value = data.url;
+    } else if (status === 'error') {
+        document.getElementById('browserStatusBar').textContent = 'Erro: ' + (data.error || '');
+    }
+}
+
+function handleBrowserFrame(data) {
+    const frame = data.frame;
+    if (!frame) return;
+    document.getElementById('browserPlaceholder').style.display = 'none';
+    document.getElementById('browserIframe').style.display = 'none';
+    const cvs = document.getElementById('browserCanvas');
+    cvs.style.display = 'block';
+    browserImg.onload = () => {
+        cvs.width = browserImg.width;
+        cvs.height = browserImg.height;
+        browserCtx.drawImage(browserImg, 0, 0);
+    };
+    browserImg.src = 'data:image/jpeg;base64,' + frame;
+    if (data.url) document.getElementById('browserUrl').value = data.url;
+}
+
+function handleBrowserHtml(data) {
+    document.getElementById('browserPlaceholder').style.display = 'none';
+    document.getElementById('browserCanvas').style.display = 'none';
+    const iframe = document.getElementById('browserIframe');
+    iframe.style.display = 'block';
+    let html = data.html || '';
+    const baseUrl = data.url || '';
+    if (baseUrl && !html.includes('<base')) {
+        html = html.replace(/<head([^>]*)>/i,
+            '<head$1><base href="' + baseUrl + '" target="_self">');
+    }
+    iframe.srcdoc = html;
+    document.getElementById('browserStatusBar').textContent =
+        (data.title || data.url || 'Carregado') + ' (' + (data.status || '') + ')';
+    if (data.url) document.getElementById('browserUrl').value = data.url;
+}
+
+// Mouse no canvas do browser (modo headless)
+document.getElementById('browserCanvas').addEventListener('click', (e) => {
+    if (!sessionId || browserMode !== 'headless') return;
+    const rect = e.target.getBoundingClientRect();
+    const scaleX = e.target.width / rect.width;
+    const scaleY = e.target.height / rect.height;
+    sendMessage('browser_input', {
+        action: 'click',
+        x: Math.round((e.clientX - rect.left) * scaleX),
+        y: Math.round((e.clientY - rect.top) * scaleY),
+    }, sessionId);
+});
+
+document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
+    if (!sessionId || browserMode !== 'headless') return;
+    e.preventDefault();
+    const rect = e.target.getBoundingClientRect();
+    const scaleX = e.target.width / rect.width;
+    const scaleY = e.target.height / rect.height;
+    sendMessage('browser_scroll', {
+        x: Math.round((e.clientX - rect.left) * scaleX),
+        y: Math.round((e.clientY - rect.top) * scaleY),
+        dx: e.deltaX, dy: e.deltaY,
+    }, sessionId);
+}, { passive: false });
+
+// Teclado quando o painel browser está ativo (modo headless)
+document.addEventListener('keydown', (e) => {
+    if (!sessionId || browserMode !== 'headless') return;
+    if (!document.querySelector('.browser-panel.active')) return;
+    if (e.target.tagName === 'INPUT') return;
+    e.preventDefault();
+    const keyMap = {
+        'Enter':'Enter','Backspace':'Backspace','Tab':'Tab','Escape':'Escape',
+        'ArrowUp':'ArrowUp','ArrowDown':'ArrowDown','ArrowLeft':'ArrowLeft','ArrowRight':'ArrowRight',
+        'Delete':'Delete','Home':'Home','End':'End','PageUp':'PageUp','PageDown':'PageDown',
+    };
+    if (keyMap[e.key]) {
+        sendMessage('browser_input', { action: 'key', key: keyMap[e.key] }, sessionId);
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+        sendMessage('browser_input', { action: 'type', text: e.key }, sessionId);
+    }
+});
 </script>
 </body>
 </html>
