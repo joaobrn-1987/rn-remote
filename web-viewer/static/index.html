@@ -1389,7 +1389,7 @@ function renderCards(agents) {
             : `${btnEdit}<span style="font-size:12px;color:var(--text-dim)">Indisponível</span>`;
         // No modo lista o mc-update-bar fica oculto via CSS — inclui o botão no footer
         const footerList = online
-            ? `${btnEdit}${btnUpdate}<button class="btn-connect" onclick="openConnectPrompt('${a.agent_id}','${name}')">&#9654; Conectar</button>`
+            ? `${btnUpdate}${btnEdit}<button class="btn-connect" onclick="openConnectPrompt('${a.agent_id}','${name}')">&#9654; Conectar</button>`
             : `${btnEdit}<span style="font-size:12px;color:var(--text-dim)">Indisponível</span>`;
 
         html += `
