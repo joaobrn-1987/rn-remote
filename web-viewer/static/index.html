@@ -1903,17 +1903,17 @@ function adminLogout() {
 
 let browserMode = null;  // 'headless' ou 'proxy'
 let browserStarted = false;
-let browserPendingUrl = null;  // URL aguardando confirmação do browser_start
+let browserPendingUrl = null;
 let browserCanvas = null;
 let browserCtx = null;
 let browserImg = new Image();
 
-(function browserInit() {
-    browserCanvas = document.getElementById('browserCanvas');
-    browserCtx = browserCanvas.getContext('2d');
-})();
-
 function browserGo() {
+    // Inicializa canvas na primeira chamada
+    if (!browserCanvas) {
+        browserCanvas = document.getElementById('browserCanvas');
+        browserCtx = browserCanvas ? browserCanvas.getContext('2d') : null;
+    }
     const url = document.getElementById('browserUrl').value.trim();
     if (!url) {
         document.getElementById('browserStatusBar').textContent = 'Digite uma URL primeiro.';
@@ -1996,14 +1996,18 @@ function handleBrowserStatus(data) {
 function handleBrowserFrame(data) {
     const frame = data.frame;
     if (!frame) return;
+    if (!browserCanvas) {
+        browserCanvas = document.getElementById('browserCanvas');
+        browserCtx = browserCanvas ? browserCanvas.getContext('2d') : null;
+    }
     document.getElementById('browserPlaceholder').style.display = 'none';
     document.getElementById('browserIframe').style.display = 'none';
-    const cvs = document.getElementById('browserCanvas');
+    const cvs = browserCanvas;
     cvs.style.display = 'block';
     browserImg.onload = () => {
         cvs.width = browserImg.width;
         cvs.height = browserImg.height;
-        browserCtx.drawImage(browserImg, 0, 0);
+        if (browserCtx) browserCtx.drawImage(browserImg, 0, 0);
     };
     browserImg.src = 'data:image/jpeg;base64,' + frame;
     if (data.url) document.getElementById('browserUrl').value = data.url;
