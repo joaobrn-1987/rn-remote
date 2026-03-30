@@ -32,12 +32,12 @@ import shutil
 import subprocess
 import urllib.request
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.1.0"
 
 import websockets
 
 PROTOCOL_VERSION = "1.0.0"
-HEARTBEAT_INTERVAL = 8
+HEARTBEAT_INTERVAL = 15
 
 logging.basicConfig(
     level=logging.INFO,
@@ -177,6 +177,7 @@ class PfSenseAgent:
         self._shell_reader_task: asyncio.Task | None = None
         self._running = True
         self._uploads: dict = {}
+        self._browser_active = False
 
     # ── Loop principal ─────────────────────────────────────────────────────────
 
@@ -187,8 +188,8 @@ class PfSenseAgent:
                 async with websockets.connect(
                     self.relay_url,
                     max_size=10 * 1024 * 1024,
-                    ping_interval=10,
-                    ping_timeout=20,
+                    ping_interval=20,
+                    ping_timeout=60,
                 ) as ws:
                     self.ws = ws
                     logger.info("Conectado")
@@ -259,6 +260,7 @@ class PfSenseAgent:
         elif t == "disconnect":
             logger.info("Viewer desconectou")
             self._stop_shell()
+            self._browser_active = False
             self.session_id = None
 
         elif t == "shell_start":
@@ -311,11 +313,72 @@ class PfSenseAgent:
         elif t == "system_info_request":
             await self._send_system_info()
 
+        elif t == "browser_start":
+            await self._handle_browser_start(data)
+
+        elif t == "browser_navigate":
+            await self._handle_browser_navigate(data)
+
+        elif t == "browser_stop":
+            self._browser_active = False
+
         elif t == "update_agent":
             await self._handle_update(data)
 
         elif t == "pong":
             pass
+
+    # ── Web Browser (Proxy Mode) ────────────────────────────────────────────────
+
+    async def _handle_browser_start(self, data: dict):
+        self._browser_active = True
+        await self._send({
+            "type": "browser_status",
+            "data": {"status": "started", "mode": "proxy"},
+            "session_id": self.session_id, "timestamp": time.time(),
+        })
+        logger.info("Browser proxy mode ativado")
+
+    async def _handle_browser_navigate(self, data: dict):
+        if not self._browser_active:
+            return
+        url = data.get("url", "")
+        if not url:
+            return
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+
+        loop = asyncio.get_running_loop()
+        try:
+            def _fetch():
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0 (RNRemote Proxy)"
+                })
+                resp = urllib.request.urlopen(req, timeout=15)
+                content_type = resp.headers.get("Content-Type", "")
+                body = resp.read()
+                charset = "utf-8"
+                if "charset=" in content_type:
+                    charset = content_type.split("charset=")[-1].split(";")[0].strip()
+                try:
+                    html = body.decode(charset)
+                except Exception:
+                    html = body.decode("utf-8", errors="replace")
+                return {"url": url, "status": resp.status,
+                        "content_type": content_type, "html": html, "title": ""}
+
+            result = await loop.run_in_executor(None, _fetch)
+            await self._send({
+                "type": "browser_html",
+                "data": result,
+                "session_id": self.session_id, "timestamp": time.time(),
+            })
+        except Exception as e:
+            await self._send({
+                "type": "browser_status",
+                "data": {"status": "error", "error": str(e), "url": url},
+                "session_id": self.session_id, "timestamp": time.time(),
+            })
 
     # ── Auto-atualização ────────────────────────────────────────────────────────
 
