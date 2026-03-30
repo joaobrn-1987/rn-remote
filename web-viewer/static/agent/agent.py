@@ -30,7 +30,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.3.0"
+AGENT_VERSION = "1.3.1"
 
 import websockets
 
@@ -410,14 +410,50 @@ class HeadlessBrowser:
         self.width = 1280
         self.height = 720
 
-    async def start(self, width: int = 1280, height: int = 720):
+    @staticmethod
+    async def _ensure_playwright():
+        """Instala playwright e Chromium se não estiverem disponíveis."""
+        import subprocess as _sp
+        loop = asyncio.get_running_loop()
+
         try:
-            from playwright.async_api import async_playwright
+            import playwright  # noqa
         except ImportError:
-            raise RuntimeError(
-                "playwright não instalado. Execute:\n"
-                "  pip install playwright && playwright install chromium --with-deps"
-            )
+            logger.info("Playwright não encontrado — instalando via pip...")
+            await loop.run_in_executor(None, lambda: _sp.run(
+                [sys.executable, "-m", "pip", "install", "playwright", "-q"],
+                check=True
+            ))
+            logger.info("Playwright instalado.")
+
+        # Tenta importar; se o pacote acabou de ser instalado precisa reimportar
+        import importlib
+        try:
+            pw_mod = importlib.import_module("playwright.async_api")
+        except Exception as e:
+            raise RuntimeError(f"Falha ao importar playwright após instalação: {e}")
+
+        # Tenta lançar o Chromium para ver se o executável existe
+        try:
+            _pw = await pw_mod.async_playwright().__aenter__()
+            _br = await _pw.chromium.launch(headless=True)
+            await _br.close()
+            await _pw.__aexit__(None, None, None)
+        except Exception as e:
+            if "executable" in str(e).lower() or "not found" in str(e).lower() or "chromium" in str(e).lower():
+                logger.info("Chromium não instalado — baixando agora (~200MB)...")
+                await loop.run_in_executor(None, lambda: _sp.run(
+                    [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
+                    check=True
+                ))
+                logger.info("Chromium instalado com sucesso.")
+            else:
+                raise
+
+    async def start(self, width: int = 1280, height: int = 720):
+        await self._ensure_playwright()
+        from playwright.async_api import async_playwright
+
         self.width = width
         self.height = height
         self._playwright = async_playwright()
