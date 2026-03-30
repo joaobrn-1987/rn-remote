@@ -104,8 +104,11 @@
         .browser-panel { display:none; flex:1; flex-direction:column; background:var(--bg-primary); overflow:hidden; }
         .browser-panel.active { display:flex; }
         .browser-toolbar { display:flex; align-items:center; gap:6px; padding:8px 12px; background:var(--bg-secondary); border-bottom:1px solid var(--border); }
-        .browser-toolbar button { padding:6px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; color:var(--text); cursor:pointer; font-size:14px; flex-shrink:0; }
-        .browser-toolbar button:hover { border-color:var(--text-dim); }
+        .browser-toolbar button { padding:6px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; color:var(--text); cursor:pointer; font-size:14px; flex-shrink:0; transition:background .15s, border-color .15s, transform .1s; }
+        .browser-toolbar button:hover { border-color:var(--text-dim); background:rgba(255,255,255,0.08); }
+        .browser-toolbar button:active { transform:scale(0.95); filter:brightness(0.85); }
+        #btnBrowserGo:hover { background:var(--accent-hover) !important; border-color:var(--accent-hover) !important; }
+        #btnBrowserGo:active { transform:scale(0.95); filter:brightness(0.85); }
         .browser-toolbar input { flex:1; min-width:0; padding:8px 12px; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:14px; outline:none; }
         .browser-toolbar input:focus { border-color:var(--accent); }
         .browser-view { flex:1; position:relative; overflow:hidden; background:#fff; }
@@ -523,7 +526,7 @@
             <button onclick="browserReload()" title="Recarregar">&#8635;</button>
             <input type="text" id="browserUrl" placeholder="https://localhost:8443" value="https://localhost:8443"
                    onkeydown="if(event.key==='Enter')browserGo()">
-            <button onclick="browserGo()" class="btn btn-sm btn-danger" style="background:var(--accent);border-color:var(--accent)">Ir</button>
+            <button id="btnBrowserGo" onclick="browserGo()" class="btn btn-sm" style="background:var(--accent);border-color:var(--accent);color:#fff">Ir</button>
             <button onclick="browserStop()" class="btn btn-sm btn-danger">Parar</button>
         </div>
         <div class="browser-view" id="browserView">
