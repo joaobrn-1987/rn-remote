@@ -709,6 +709,7 @@ function disconnect() {
     sessionId = null;
     browserStarted = false;
     browserMode = null;
+    browserPendingUrl = null;
     showLogin();
 }
 
@@ -1895,6 +1896,7 @@ function adminLogout() {
 
 let browserMode = null;  // 'headless' ou 'proxy'
 let browserStarted = false;
+let browserPendingUrl = null;  // URL aguardando confirmação do browser_start
 let browserCanvas = null;
 let browserCtx = null;
 let browserImg = new Image();
@@ -1908,9 +1910,11 @@ function browserGo() {
     const url = document.getElementById('browserUrl').value.trim();
     if (!url || !sessionId) return;
 
-    document.getElementById('browserStatusBar').textContent = 'Carregando: ' + url;
+    document.getElementById('browserStatusBar').textContent = 'Aguardando agente...';
 
     if (!browserStarted) {
+        // Guarda a URL e aguarda browser_status "started" antes de navegar
+        browserPendingUrl = url;
         const view = document.getElementById('browserView');
         sendMessage('browser_start', {
             width: view.clientWidth || 1280,
@@ -1919,9 +1923,11 @@ function browserGo() {
             quality: 60,
         }, sessionId);
         browserStarted = true;
+    } else {
+        // Já iniciado — navega direto
+        document.getElementById('browserStatusBar').textContent = 'Carregando: ' + url;
+        sendMessage('browser_navigate', { url: url, action: 'goto' }, sessionId);
     }
-
-    sendMessage('browser_navigate', { url: url, action: 'goto' }, sessionId);
 }
 
 function browserBack() {
@@ -1955,11 +1961,20 @@ function handleBrowserStatus(data) {
     if (status === 'started') {
         browserMode = data.mode;
         document.getElementById('browserStatusBar').textContent =
-            'Browser iniciado (modo: ' + browserMode + ')';
+            'Conectado (modo: ' + browserMode + ')';
+        // Navega para a URL pendente
+        if (browserPendingUrl) {
+            const url = browserPendingUrl;
+            browserPendingUrl = null;
+            document.getElementById('browserStatusBar').textContent = 'Carregando: ' + url;
+            sendMessage('browser_navigate', { url: url, action: 'goto' }, sessionId);
+        }
     } else if (status === 'navigated') {
         document.getElementById('browserStatusBar').textContent = data.title || data.url || '';
         if (data.url) document.getElementById('browserUrl').value = data.url;
     } else if (status === 'error') {
+        browserStarted = false;
+        browserMode = null;
         document.getElementById('browserStatusBar').textContent = 'Erro: ' + (data.error || '');
     }
 }
