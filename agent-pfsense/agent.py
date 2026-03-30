@@ -32,7 +32,7 @@ import shutil
 import subprocess
 import urllib.request
 
-AGENT_VERSION = "1.1.0"
+AGENT_VERSION = "1.1.1"
 
 import websockets
 
@@ -351,10 +351,16 @@ class PfSenseAgent:
         loop = asyncio.get_running_loop()
         try:
             def _fetch():
+                import ssl
+                # Ignora certificado auto-assinado (comum no pfSense)
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
                 req = urllib.request.Request(url, headers={
                     "User-Agent": "Mozilla/5.0 (RNRemote Proxy)"
                 })
-                resp = urllib.request.urlopen(req, timeout=15)
+                resp = urllib.request.urlopen(req, timeout=15, context=ctx)
+                final_url = resp.url  # URL final após redirects
                 content_type = resp.headers.get("Content-Type", "")
                 body = resp.read()
                 charset = "utf-8"
@@ -364,7 +370,7 @@ class PfSenseAgent:
                     html = body.decode(charset)
                 except Exception:
                     html = body.decode("utf-8", errors="replace")
-                return {"url": url, "status": resp.status,
+                return {"url": final_url, "status": resp.status,
                         "content_type": content_type, "html": html, "title": ""}
 
             result = await loop.run_in_executor(None, _fetch)
