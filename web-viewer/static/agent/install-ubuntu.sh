@@ -1,6 +1,6 @@
 #!/bin/bash
-# RNRemote - Instalação / Atualização do agente
-# Uso: sudo bash install.sh
+# RNRemote - Instalação / Atualização do agente (Ubuntu / Debian)
+# Uso: sudo bash install-ubuntu.sh
 
 set -e
 
@@ -11,18 +11,24 @@ info() { echo -e "  ${DIM}→${RESET}  $1"; }
 warn() { echo -e "  ${YELLOW}!${RESET}  $1"; }
 
 echo -e "\n${CYAN}${BOLD}╔══════════════════════════════════════════╗"
-echo -e "║        RNRemote — Instalação do Agente   ║"
+echo -e "║   RNRemote — Instalação (Ubuntu/Debian)  ║"
 echo -e "╚══════════════════════════════════════════╝${RESET}\n"
 
 # ── Root ──────────────────────────────────────────────────────────────────────
-[ "$EUID" -ne 0 ] && err "Execute como root: sudo bash install.sh"
+[ "$EUID" -ne 0 ] && err "Execute como root: sudo bash install-ubuntu.sh"
 
 SERVICE="rnremote-agent"
 INSTALL_DIR="/opt/rnremote"
 CONF_DIR="/etc/rnremote"
 SVC_FILE="/etc/systemd/system/${SERVICE}.service"
 PANEL_URL="https://rnremote.joaoneto.tec.br"
-PYTHON=$(command -v python3) || err "python3 não encontrado. Instale com: apt install python3"
+
+# ── Garante python3 e pip ─────────────────────────────────────────────────────
+if ! command -v python3 &>/dev/null || ! command -v pip3 &>/dev/null; then
+    info "Instalando python3 e pip..."
+    apt-get update -qq && apt-get install -y python3 python3-pip curl -qq
+fi
+PYTHON=$(command -v python3)
 
 # ── Detecta versão local ───────────────────────────────────────────────────────
 LOCAL_VERSION=""
@@ -96,7 +102,6 @@ read -rsp "  Senha do admin: " ADMIN_PASS
 echo
 [ -z "$ADMIN_PASS" ] && err "Senha é obrigatória."
 
-# Sugere o hostname como nickname padrão
 DEFAULT_NICKNAME=$(hostname 2>/dev/null || echo "agente")
 read -rp "  Nome desta máquina [${DEFAULT_NICKNAME}]: " INPUT_NICK
 NICKNAME="${INPUT_NICK:-$DEFAULT_NICKNAME}"
@@ -105,7 +110,6 @@ read -rsp "  Senha de acesso ao agente (usada para conectar): " ACCESS_PASS
 echo
 [ -z "$ACCESS_PASS" ] && err "Senha de acesso é obrigatória."
 
-# Login no painel → obtém JWT
 info "Autenticando no painel..."
 LOGIN_RESP=$(curl -fsSL --max-time 15 -X POST "$PANEL_URL/api/login" \
     -H "Content-Type: application/json" \
@@ -116,7 +120,6 @@ JWT=$(echo "$LOGIN_RESP" | grep -oP '"token"\s*:\s*"\K[^"]+' || true)
 [ -z "$JWT" ] && err "Login falhou. Verifique e-mail e senha."
 ok "Autenticado no painel"
 
-# Provisiona o agente → obtém agent_id e binding_secret
 info "Registrando agente..."
 PROV_RESP=$(curl -fsSL --max-time 15 -X POST "$PANEL_URL/api/agents/provision" \
     -H "Content-Type: application/json" \
@@ -137,13 +140,12 @@ for pkg in websockets mss pillow pynput; do
     if ! $PYTHON -c "import ${pkg/pillow/PIL}" 2>/dev/null; then
         info "Instalando $pkg..."
         $PYTHON -m pip install --quiet "$pkg" 2>/dev/null || \
-        $PYTHON -m pip install --quiet "$pkg" --break-system-packages 2>/dev/null || \
         apt-get install -y "python3-${pkg}" -qq 2>/dev/null || true
     fi
 done
 
 $PYTHON -c "import websockets" 2>/dev/null && ok "Dependências OK" || \
-    err "websockets não instalado. Execute: pip install websockets"
+    err "websockets não instalado. Execute: pip3 install websockets"
 
 # ── Baixa agent.py ─────────────────────────────────────────────────────────────
 echo -e "\n${BOLD}[3/5] Baixando agent.py...${RESET}"

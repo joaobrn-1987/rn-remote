@@ -98,6 +98,47 @@
     </div>
 </div>
 
+<!-- Modal: Cliente -->
+<div class="modal-bg" id="clientModal">
+    <div class="modal" style="width:500px">
+        <h3 id="clientModalTitle">Novo Cliente</h3>
+        <div class="modal-err" id="clientErr"></div>
+        <input type="hidden" id="clientId">
+        <label>Nome *</label>
+        <input type="text" id="clientName" placeholder="Razão social ou nome">
+        <label>CNPJ / CPF</label>
+        <input type="text" id="clientDoc" placeholder="Opcional">
+        <label>E-mail</label>
+        <input type="email" id="clientEmail" placeholder="contato@empresa.com">
+        <label>Telefone</label>
+        <input type="text" id="clientPhone" placeholder="(00) 00000-0000">
+        <label>Observações</label>
+        <input type="text" id="clientNotes" placeholder="Opcional">
+        <div class="modal-footer">
+            <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="closeClientModal()">Cancelar</button>
+            <button class="btn btn-accent" onclick="saveClient()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Máquinas do Cliente -->
+<div class="modal-bg" id="clientAgentsModal">
+    <div class="modal" style="width:580px;max-width:98vw">
+        <h3 id="clientAgentsTitle">Máquinas do Cliente</h3>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+            <select id="clientAgentAddSelect" style="flex:1;padding:8px;background:var(--input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px">
+                <option value="">Selecionar máquina para vincular...</option>
+            </select>
+            <button class="btn btn-accent" onclick="addAgentToClient()">+ Vincular</button>
+        </div>
+        <table><thead><tr><th>ID</th><th>Nome/Host</th><th>SO</th><th>Status</th><th></th></tr></thead>
+        <tbody id="clientAgentsBody"></tbody></table>
+        <div class="modal-footer" style="margin-top:16px">
+            <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="closeClientAgentsModal()">Fechar</button>
+        </div>
+    </div>
+</div>
+
 <!-- Modal: Grupo -->
 <div class="modal-bg" id="groupModal">
     <div class="modal">
@@ -184,9 +225,14 @@
 <div class="grid">
     <div class="sidebar">
         <a class="active" onclick="showSection('dashboard')">&#128200; Dashboard</a>
-        <a onclick="showSection('agents')">&#128187; Agentes</a>
+        <a onclick="showSection('clients')">&#128188; Clientes</a>
         <a onclick="showSection('sessions')">&#128279; Sessões</a>
         <a onclick="showSection('audit')">&#128220; Auditoria</a>
+        <a style="color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;padding:14px 24px 4px;cursor:default;pointer-events:none">&#129302; Agentes</a>
+        <a onclick="showSection('agents')" style="padding-left:40px;font-size:13px">&#128203; Registrados</a>
+        <a onclick="showSection('agent-linux')" style="padding-left:40px;font-size:13px">&#128039; Linux</a>
+        <a onclick="showSection('agent-pfsense')" style="padding-left:40px;font-size:13px">&#128293; pfSense</a>
+        <a onclick="showSection('agent-windows')" style="padding-left:40px;font-size:13px">&#129695; Windows</a>
         <a style="color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;padding:14px 24px 4px;cursor:default;pointer-events:none">&#9881; Configurações</a>
         <a onclick="showSection('groups')" style="padding-left:40px;font-size:13px">&#128101; Grupos</a>
         <a onclick="showSection('general')" style="padding-left:40px;font-size:13px">&#128196; Geral</a>
@@ -204,11 +250,142 @@
             <tbody id="activeSessionsBody"></tbody></table>
         </div>
 
+        <!-- Clientes -->
+        <div class="section" id="sec-clients">
+            <h2>Clientes</h2>
+            <div style="margin-bottom:16px">
+                <button class="btn btn-accent" onclick="openCreateClient()">+ Novo Cliente</button>
+            </div>
+            <table>
+                <thead><tr><th>Nome</th><th>CNPJ/CPF</th><th>E-mail</th><th>Telefone</th><th>Máquinas</th><th>Cadastro</th><th></th></tr></thead>
+                <tbody id="clientsBody"></tbody>
+            </table>
+        </div>
+
         <!-- Agentes -->
         <div class="section" id="sec-agents">
             <h2>Agentes Registrados</h2>
             <table><thead><tr><th>ID</th><th>Hostname</th><th>SO</th><th>Usuário</th><th>IP</th><th>Status</th><th>Último Acesso</th><th></th></tr></thead>
             <tbody id="agentsBody"></tbody></table>
+        </div>
+
+        <!-- Agente Linux -->
+        <div class="section" id="sec-agent-linux">
+            <h2>Agente Linux</h2>
+            <div class="cards" id="agentLinuxCards"></div>
+
+            <!-- Ubuntu -->
+            <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:24px;max-width:720px;margin-bottom:24px">
+                <h3 style="font-size:16px;margin-bottom:4px;color:var(--bright)">&#128039; Ubuntu / Debian</h3>
+                <p style="font-size:12px;color:var(--dim);margin-bottom:16px">Requer Ubuntu 20.04+ ou Debian 11+. Execute como root.</p>
+                <div style="margin-bottom:16px">
+                    <div style="font-size:12px;color:var(--dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Instalação</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <code id="installCmdUbuntu" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">curl -fsSL https://rnremote.joaoneto.tec.br/static/agent/install-ubuntu.sh -o /tmp/setup.sh && sudo bash /tmp/setup.sh</code>
+                        <button class="btn btn-accent" onclick="copyCmd('installCmdUbuntu')">Copiar</button>
+                    </div>
+                </div>
+                <div style="margin-bottom:16px">
+                    <div style="font-size:12px;color:var(--dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Remoção</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <code id="uninstallCmdUbuntu" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">curl -fsSL https://rnremote.joaoneto.tec.br/static/agent/uninstall-ubuntu.sh -o /tmp/remove.sh && sudo bash /tmp/remove.sh</code>
+                        <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="copyCmd('uninstallCmdUbuntu')">Copiar</button>
+                    </div>
+                </div>
+                <div style="display:flex;gap:12px;flex-wrap:wrap">
+                    <a href="/static/agent/install-ubuntu.sh" download class="btn btn-accent" style="text-decoration:none">&#8595; install-ubuntu.sh</a>
+                    <a href="/static/agent/uninstall-ubuntu.sh" download class="btn" style="background:var(--bg2);color:var(--text);text-decoration:none">&#8595; uninstall-ubuntu.sh</a>
+                </div>
+            </div>
+
+            <!-- CentOS -->
+            <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:24px;max-width:720px">
+                <h3 style="font-size:16px;margin-bottom:4px;color:var(--bright)">&#128039; CentOS Stream 9 / RHEL 9</h3>
+                <p style="font-size:12px;color:var(--dim);margin-bottom:16px">Requer CentOS Stream 9 ou RHEL 9. Execute como root.</p>
+                <div style="margin-bottom:16px">
+                    <div style="font-size:12px;color:var(--dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Instalação</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <code id="installCmdCentos" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">curl -fsSL https://rnremote.joaoneto.tec.br/static/agent/install-centos.sh -o /tmp/setup.sh && sudo bash /tmp/setup.sh</code>
+                        <button class="btn btn-accent" onclick="copyCmd('installCmdCentos')">Copiar</button>
+                    </div>
+                </div>
+                <div style="margin-bottom:16px">
+                    <div style="font-size:12px;color:var(--dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Remoção</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <code id="uninstallCmdCentos" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">curl -fsSL https://rnremote.joaoneto.tec.br/static/agent/uninstall-centos.sh -o /tmp/remove.sh && sudo bash /tmp/remove.sh</code>
+                        <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="copyCmd('uninstallCmdCentos')">Copiar</button>
+                    </div>
+                </div>
+                <div style="display:flex;gap:12px;flex-wrap:wrap">
+                    <a href="/static/agent/install-centos.sh" download class="btn btn-accent" style="text-decoration:none">&#8595; install-centos.sh</a>
+                    <a href="/static/agent/uninstall-centos.sh" download class="btn" style="background:var(--bg2);color:var(--text);text-decoration:none">&#8595; uninstall-centos.sh</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agente pfSense -->
+        <div class="section" id="sec-agent-pfsense">
+            <h2>Agente pfSense</h2>
+            <div class="cards" id="agentPfsenseCards"></div>
+            <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:24px;max-width:720px">
+                <h3 style="font-size:15px;margin-bottom:4px;color:var(--bright)">Instalação</h3>
+                <p style="font-size:12px;color:var(--dim);margin-bottom:16px">Requer pfSense 2.7+ (FreeBSD 14). Execute como root no pfSense.</p>
+                <div style="margin-bottom:20px">
+                    <div style="font-size:12px;color:var(--dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Script de instalação</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <code id="installCmdPfsense" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">curl -fsSL https://rnremote.joaoneto.tec.br/static/agent/install-pfsense.sh | sh</code>
+                        <button class="btn btn-accent" onclick="copyCmd('installCmdPfsense')">Copiar</button>
+                    </div>
+                </div>
+                <div style="margin-bottom:20px">
+                    <div style="font-size:12px;color:var(--dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Script de remoção</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <code id="uninstallCmdPfsense" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">curl -fsSL https://rnremote.joaoneto.tec.br/static/agent/uninstall-pfsense.sh | sh</code>
+                        <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="copyCmd('uninstallCmdPfsense')">Copiar</button>
+                    </div>
+                </div>
+                <div style="display:flex;gap:12px;flex-wrap:wrap">
+                    <a href="/static/agent/agent-pfsense.py" download class="btn btn-accent" style="text-decoration:none">&#8595; agent-pfsense.py</a>
+                    <a href="/static/agent/install-pfsense.sh" download class="btn" style="background:var(--bg2);color:var(--text);text-decoration:none">&#8595; install-pfsense.sh</a>
+                    <a href="/static/agent/uninstall-pfsense.sh" download class="btn" style="background:var(--bg2);color:var(--text);text-decoration:none">&#8595; uninstall-pfsense.sh</a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agente Windows -->
+        <div class="section" id="sec-agent-windows">
+            <h2>Agente Windows</h2>
+            <div class="cards" id="agentWindowsCards"></div>
+            <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:24px;max-width:720px">
+                <h3 style="font-size:15px;margin-bottom:4px;color:var(--bright)">Instalação</h3>
+                <p style="font-size:12px;color:var(--dim);margin-bottom:16px">Requer Windows 10/11 com Python 3.8+. Execute o PowerShell como <strong>Administrador</strong>.<br>Instala como Serviço Windows (inicia automaticamente) e exibe ícone na bandeja do sistema.</p>
+                <div style="margin-bottom:20px">
+                    <div style="font-size:12px;color:var(--dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Instalação automática (PowerShell como Admin)</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <code id="installCmdWindows" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">irm https://rnremote.joaoneto.tec.br/static/agent/install-windows.ps1 | iex</code>
+                        <button class="btn btn-accent" onclick="copyCmd('installCmdWindows')">Copiar</button>
+                    </div>
+                </div>
+                <div style="margin-bottom:20px">
+                    <div style="font-size:12px;color:var(--dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Gerar executável (.exe) com PyInstaller</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <code id="installCmdWindowsExe" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">pip install pyinstaller && pyinstaller --onefile --noconsole --name RNRemote-Agent agent-windows.py</code>
+                        <button class="btn btn-accent" onclick="copyCmd('installCmdWindowsExe')">Copiar</button>
+                    </div>
+                </div>
+                <div style="margin-bottom:20px">
+                    <div style="font-size:12px;color:var(--dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Remoção (PowerShell como Admin)</div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <code id="uninstallCmdWindows" style="flex:1;background:var(--input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">irm https://rnremote.joaoneto.tec.br/static/agent/uninstall-windows.ps1 | iex</code>
+                        <button class="btn" style="background:var(--bg2);color:var(--text)" onclick="copyCmd('uninstallCmdWindows')">Copiar</button>
+                    </div>
+                </div>
+                <div style="display:flex;gap:12px;flex-wrap:wrap">
+                    <a href="/static/agent/agent-windows.py" download class="btn btn-accent" style="text-decoration:none">&#8595; agent-windows.py</a>
+                    <a href="/static/agent/install-windows.ps1" download class="btn" style="background:var(--bg2);color:var(--text);text-decoration:none">&#8595; install-windows.ps1</a>
+                    <a href="/static/agent/uninstall-windows.ps1" download class="btn" style="background:var(--bg2);color:var(--text);text-decoration:none">&#8595; uninstall-windows.ps1</a>
+                </div>
+            </div>
         </div>
 
         <!-- Sessões -->
@@ -258,7 +435,15 @@
 </div>
 
 <script>
-let token=null, currentUserId=null;
+let token=null, currentUserId=null, _refreshTimer=null;
+
+function _startAutoRefresh(fn, interval=15000){
+    if(_refreshTimer) clearInterval(_refreshTimer);
+    _refreshTimer = setInterval(fn, interval);
+}
+function _stopAutoRefresh(){
+    if(_refreshTimer){ clearInterval(_refreshTimer); _refreshTimer=null; }
+}
 
 // Auto-login: reaproveita o token salvo pelo painel principal
 (async function(){
@@ -276,6 +461,7 @@ let token=null, currentUserId=null;
         const av = document.getElementById('profileAvatar');
         if (av) av.textContent = (name[0] || '?').toUpperCase();
         loadDashboard();
+        _startAutoRefresh(loadDashboard, 10000);
     } catch(e) { document.getElementById('loginOverlay').style.display = ''; }
 })();
 
@@ -365,13 +551,18 @@ function showSection(name){
     document.getElementById('sec-'+name).classList.add('active');
     document.querySelectorAll('.sidebar a').forEach(a=>a.classList.remove('active'));
     event.target.classList.add('active');
-    if(name==='dashboard')loadDashboard();
-    if(name==='agents')loadAgents();
+    _stopAutoRefresh();
+    if(name==='dashboard'){loadDashboard();_startAutoRefresh(loadDashboard,10000);}
+    if(name==='agents'){loadAgents();_startAutoRefresh(loadAgents,10000);}
+    if(name==='agent-linux'){loadAgentLinux();_startAutoRefresh(loadAgentLinux,15000);}
+    if(name==='agent-pfsense'){loadAgentPfsense();_startAutoRefresh(loadAgentPfsense,15000);}
+    if(name==='agent-windows'){loadAgentWindows();_startAutoRefresh(loadAgentWindows,15000);}
     if(name==='sessions')loadSessions();
     if(name==='audit')loadAudit();
     if(name==='users')loadUsers();
     if(name==='groups')loadGroups();
     if(name==='general')loadSettings();
+    if(name==='clients'){loadClients();_startAutoRefresh(loadClients,15000);}
 }
 
 async function loadDashboard(){
@@ -388,7 +579,7 @@ async function loadDashboard(){
 async function loadAgents(){
     const a=await(await fetch('/api/agents')).json();
     document.getElementById('agentsBody').innerHTML=a.map(x=>`<tr>
-        <td><strong>${x.agent_id}</strong></td><td>${x.hostname}</td><td>${x.os_type} ${x.os_version||''}</td>
+        <td><strong>${x.agent_id}</strong></td><td>${x.hostname}</td><td>${osIcon(x.os_type)}${x.os_type} ${x.os_version||''}</td>
         <td>${x.username}</td><td>${x.ip_address}</td>
         <td><span class="badge ${x.is_online?'badge-online':'badge-offline'}">${x.is_online?'Online':'Offline'}</span></td>
         <td>${fmtDate(x.last_seen)}</td>
@@ -613,7 +804,7 @@ async function refreshGroupAgents(){
     document.getElementById('groupAgentsBody').innerHTML=members.map(a=>`<tr>
         <td><strong>${a.agent_id}</strong></td>
         <td>${a.hostname}</td>
-        <td>${a.os_type}</td>
+        <td>${osIcon(a.os_type)}${a.os_type}</td>
         <td><span class="badge ${a.is_online?'badge-online':'badge-offline'}">${a.is_online?'Online':'Offline'}</span></td>
         <td><button class="btn btn-danger" onclick="removeAgentFromGroup('${a.agent_id}')">&#128465;</button></td>
     </tr>`).join('')||'<tr><td colspan="5" style="color:var(--dim)">Nenhum agente neste grupo</td></tr>';
@@ -636,9 +827,185 @@ function closeGroupAgentsModal(){
     currentGroupId=null;
 }
 
+async function loadAgentLinux(){
+    try {
+        const [vr, ar] = await Promise.all([fetch('/api/agent/version'), fetch('/api/agents')]);
+        const v = await vr.json();
+        const agents = await ar.json();
+        const linux = agents.filter(x=>x.os_type==='Linux');
+        const online = linux.filter(x=>x.is_online).length;
+        document.getElementById('agentLinuxCards').innerHTML=`
+            <div class="stat-card"><div class="label">Versão Atual</div><div class="value" style="color:var(--accent);font-size:22px">v${v.linux||v.version}</div></div>
+            <div class="stat-card"><div class="label">Agentes Linux</div><div class="value">${linux.length}</div><div class="sub">${online} online</div></div>`;
+    } catch(e){}
+}
+
+async function loadAgentPfsense(){
+    try {
+        const [vr, ar] = await Promise.all([fetch('/api/agent/version'), fetch('/api/agents')]);
+        const v = await vr.json();
+        const agents = await ar.json();
+        const pfsense = agents.filter(x=>x.os_type==='FreeBSD');
+        const online = pfsense.filter(x=>x.is_online).length;
+        document.getElementById('agentPfsenseCards').innerHTML=`
+            <div class="stat-card"><div class="label">Versão Atual</div><div class="value" style="color:var(--accent);font-size:22px">v${v.pfsense||'?'}</div></div>
+            <div class="stat-card"><div class="label">Agentes pfSense</div><div class="value">${pfsense.length}</div><div class="sub">${online} online</div></div>`;
+    } catch(e){}
+}
+
+async function loadAgentWindows(){
+    try {
+        const [vr, ar] = await Promise.all([fetch('/api/agent/version'), fetch('/api/agents')]);
+        const v = await vr.json();
+        const agents = await ar.json();
+        const win = agents.filter(x=>x.os_type==='Windows');
+        const online = win.filter(x=>x.is_online).length;
+        document.getElementById('agentWindowsCards').innerHTML=`
+            <div class="stat-card"><div class="label">Versão Atual</div><div class="value" style="color:var(--accent);font-size:22px">v${v.windows||'?'}</div></div>
+            <div class="stat-card"><div class="label">Agentes Windows</div><div class="value">${win.length}</div><div class="sub">${online} online</div></div>`;
+    } catch(e){}
+}
+
+function copyCmd(id){
+    const b = event.target;
+    navigator.clipboard.writeText(document.getElementById(id).textContent.trim())
+        .then(()=>{
+            const prev = b.textContent;
+            const prevBg = b.style.background;
+            b.textContent = '✔ Copiado!';
+            b.style.background = 'var(--success)';
+            b.style.transition = 'background .2s';
+            b.disabled = true;
+            setTimeout(()=>{
+                b.textContent = prev;
+                b.style.background = prevBg;
+                b.disabled = false;
+            }, 2000);
+        });
+}
+
+function osIcon(os){if(!os)return'';if(os==='FreeBSD')return'&#128293; ';if(os==='Windows')return'&#129695; ';if(os==='Linux')return'&#128039; ';return''}
 function fmtBytes(b){if(!b)return'0 B';const k=1024,s=['B','KB','MB','GB'],i=Math.floor(Math.log(b)/Math.log(k));return(b/Math.pow(k,i)).toFixed(1)+' '+s[i]}
 function fmtDate(d){if(!d)return'-';return new Date(d).toLocaleString('pt-BR')}
 function fmtDuration(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m '+s%60+'s';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'}
+
+// ─── Clientes ───
+
+let currentClientId=null;
+
+async function loadClients(){
+    const clients=await(await fetch('/api/clients')).json();
+    document.getElementById('clientsBody').innerHTML=clients.map(c=>`<tr>
+        <td><strong>${c.name}</strong></td>
+        <td style="color:var(--dim)">${c.document||'-'}</td>
+        <td style="color:var(--dim)">${c.email||'-'}</td>
+        <td style="color:var(--dim)">${c.phone||'-'}</td>
+        <td><span class="badge badge-active">${c.agent_count}</span></td>
+        <td>${fmtDate(c.created_at)}</td>
+        <td style="display:flex;gap:6px">
+            <button class="btn btn-accent" onclick="openClientAgents(${c.id},'${escQ(c.name)}')">&#128187; Máquinas</button>
+            <button class="btn btn-warn" onclick="openEditClient(${c.id},'${escQ(c.name)}','${escQ(c.document||'')}','${escQ(c.email||'')}','${escQ(c.phone||'')}','${escQ(c.notes||'')}')">&#9998;</button>
+            <button class="btn btn-danger" onclick="removeClient(${c.id},'${escQ(c.name)}')">&#128465;</button>
+        </td>
+    </tr>`).join('')||'<tr><td colspan="7" style="color:var(--dim)">Nenhum cliente cadastrado</td></tr>';
+}
+
+function openCreateClient(){
+    document.getElementById('clientModalTitle').textContent='Novo Cliente';
+    document.getElementById('clientId').value='';
+    document.getElementById('clientName').value='';
+    document.getElementById('clientDoc').value='';
+    document.getElementById('clientEmail').value='';
+    document.getElementById('clientPhone').value='';
+    document.getElementById('clientNotes').value='';
+    document.getElementById('clientErr').style.display='none';
+    document.getElementById('clientModal').classList.add('open');
+}
+
+function openEditClient(id,name,doc,email,phone,notes){
+    document.getElementById('clientModalTitle').textContent='Editar Cliente';
+    document.getElementById('clientId').value=id;
+    document.getElementById('clientName').value=name;
+    document.getElementById('clientDoc').value=doc;
+    document.getElementById('clientEmail').value=email;
+    document.getElementById('clientPhone').value=phone;
+    document.getElementById('clientNotes').value=notes;
+    document.getElementById('clientErr').style.display='none';
+    document.getElementById('clientModal').classList.add('open');
+}
+
+function closeClientModal(){document.getElementById('clientModal').classList.remove('open')}
+
+async function saveClient(){
+    const id=document.getElementById('clientId').value;
+    const payload={
+        name:document.getElementById('clientName').value.trim(),
+        document:document.getElementById('clientDoc').value.trim(),
+        email:document.getElementById('clientEmail').value.trim(),
+        phone:document.getElementById('clientPhone').value.trim(),
+        notes:document.getElementById('clientNotes').value.trim()
+    };
+    const errEl=document.getElementById('clientErr');
+    if(!payload.name){errEl.textContent='Nome obrigatório';errEl.style.display='block';return}
+    let r;
+    if(id){
+        r=await fetch(`/api/clients/${id}`,{method:'PUT',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(payload)});
+    } else {
+        r=await fetch('/api/clients',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify(payload)});
+    }
+    const d=await r.json();
+    if(d.ok){closeClientModal();loadClients()}
+    else{errEl.textContent=d.error||'Erro ao salvar';errEl.style.display='block'}
+}
+
+async function removeClient(id,name){
+    if(!confirm(`Remover cliente "${name}"?`))return;
+    await fetch(`/api/clients/${id}`,{method:'DELETE',headers:{'Authorization':'Bearer '+token}});
+    loadClients();
+}
+
+async function openClientAgents(clientId,clientName){
+    currentClientId=clientId;
+    document.getElementById('clientAgentsTitle').textContent='Máquinas — '+clientName;
+    if(!allAgents.length)allAgents=await(await fetch('/api/agents')).json();
+    await refreshClientAgents();
+    document.getElementById('clientAgentsModal').classList.add('open');
+}
+
+async function refreshClientAgents(){
+    const members=await(await fetch(`/api/clients/${currentClientId}/agents`)).json();
+    const memberIds=new Set(members.map(a=>a.agent_id));
+    const sel=document.getElementById('clientAgentAddSelect');
+    sel.innerHTML='<option value="">Selecionar máquina para vincular...</option>';
+    allAgents.filter(a=>!memberIds.has(a.agent_id)).forEach(a=>{
+        const label=a.nickname&&a.nickname!==a.hostname?`${a.nickname} / ${a.hostname}`:(a.hostname||a.agent_id);
+        sel.innerHTML+=`<option value="${a.agent_id}">${label} (${a.agent_id})</option>`;
+    });
+    document.getElementById('clientAgentsBody').innerHTML=members.map(a=>`<tr>
+        <td><strong>${a.agent_id}</strong></td>
+        <td>${a.nickname&&a.nickname!==a.hostname?`${a.nickname}<br><span style="color:var(--dim);font-size:11px">${a.hostname}</span>`:a.hostname}</td>
+        <td>${osIcon(a.os_type)}${a.os_type}</td>
+        <td><span class="badge ${a.is_online?'badge-online':'badge-offline'}">${a.is_online?'Online':'Offline'}</span></td>
+        <td><button class="btn btn-danger" onclick="removeAgentFromClient('${a.agent_id}')">&#128465;</button></td>
+    </tr>`).join('')||'<tr><td colspan="5" style="color:var(--dim)">Nenhuma máquina vinculada</td></tr>';
+}
+
+async function addAgentToClient(){
+    const agentId=document.getElementById('clientAgentAddSelect').value;
+    if(!agentId)return;
+    await fetch(`/api/clients/${currentClientId}/agents`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({agent_id:agentId})});
+    await refreshClientAgents();
+}
+
+async function removeAgentFromClient(agentId){
+    await fetch(`/api/clients/${currentClientId}/agents/${agentId}`,{method:'DELETE',headers:{'Authorization':'Bearer '+token}});
+    await refreshClientAgents();
+}
+
+function closeClientAgentsModal(){
+    document.getElementById('clientAgentsModal').classList.remove('open');
+    currentClientId=null;
+}
 </script>
 </body>
 </html>

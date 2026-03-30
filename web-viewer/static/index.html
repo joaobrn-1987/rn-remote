@@ -168,7 +168,8 @@
         .machines-grid.list-view .mc-detail-label { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.5px; }
         .machines-grid.list-view .mc-detail-value { font-size:12px; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         /* Coluna: status */
-        .machines-grid.list-view .mc-footer { flex-shrink:0; padding-left:16px; border-left:1px solid var(--border); margin-left:0; }
+        .machines-grid.list-view .mc-update-bar { display:none; }
+        .machines-grid.list-view .mc-footer { flex-shrink:0; padding-left:16px; border-left:1px solid var(--border); margin-left:0; justify-content:flex-start; }
         /* Indicador de status à esquerda do card */
         .machines-grid.list-view .machine-card { border-left-width:3px; }
         .machines-grid.list-view .machine-card:not(.offline) { border-left-color:var(--success); }
@@ -192,7 +193,8 @@
         .mc-detail { display:flex; flex-direction:column; gap:2px; }
         .mc-detail-label { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.6px; }
         .mc-detail-value { font-size:12px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .mc-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+        .mc-update-bar { min-height:30px; display:flex; align-items:center; }
+        .mc-footer { display:flex; align-items:center; justify-content:flex-end; gap:8px; }
         .btn-connect { display:inline-flex; align-items:center; gap:6px; padding:7px 16px; background:var(--accent); color:#fff; border:none; border-radius:7px; font-size:13px; font-weight:600; cursor:pointer; transition:background .2s; }
         .btn-connect:hover { background:var(--accent-hover); }
         .btn-edit-mc { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; background:rgba(99,102,241,.08); border:1px solid rgba(99,102,241,.3); border-radius:7px; font-size:12px; color:#818cf8; cursor:pointer; transition:all .2s; }
@@ -425,6 +427,9 @@
         <div class="tab" data-tab="files" onclick="switchTab('files')">&#128193; Arquivos</div>
         <div class="tab" data-tab="sysinfo" onclick="switchTab('sysinfo')">&#9881; Sistema</div>
         <div class="spacer"></div>
+        <select id="monitorSelect" onchange="changeMonitor(this.value)" style="display:none">
+            <option value="1">Monitor 1</option>
+        </select>
         <select id="qualitySelect" onchange="changeQuality(this.value)">
             <option value="30">Baixa Qualidade</option>
             <option value="50" selected>Média</option>
@@ -578,8 +583,15 @@ let screenImage = new Image();
 // Cache local de nicknames — persiste entre atualizações do relay
 let cachedNicknames = {};
 
-// Versão mais recente do agente disponível no servidor
-let latestAgentVersion = "";
+// Versões mais recentes dos agentes por tipo de OS
+let latestAgentVersions = { linux: "", windows: "", pfsense: "" };
+
+function getLatestVersionForAgent(a) {
+    const os = (a.os_type || '').toLowerCase();
+    if (os === 'windows') return latestAgentVersions.windows;
+    if (os === 'freebsd') return latestAgentVersions.pfsense;
+    return latestAgentVersions.linux;
+}
 
 // Agentes que acabaram de ser atualizados (exibe badge de sucesso por 10s)
 const agentUpdateSuccess = new Map(); // agent_id -> timeout handle
@@ -679,6 +691,7 @@ function handleMessage(msg) {
             currentAgentId = msg.data.agent_id;
             showMain();
             sendMessage('screen_request', { action: 'start' }, sessionId);
+            sendMessage('system_info_request', {}, sessionId);
             break;
 
         case 'connect_reject':
@@ -711,6 +724,7 @@ function handleMessage(msg) {
 
         case 'system_info':
             renderSystemInfo(msg.data);
+            updateMonitorSelector(msg.data.monitors);
             break;
 
         case 'disconnect':
@@ -1306,20 +1320,21 @@ function renderCards(agents) {
             : '<span class="mc-badge badge-off">Offline</span>';
         const btnEdit = `<button class="btn-edit-mc" onclick="openEdit('${a.agent_id}','${name.replace(/'/g,"\\'")}')">&#9998; Editar</button>`;
         const agentVer = a.version || '';
-        const needsUpdate = online && agentVer && latestAgentVersion && agentVer !== latestAgentVersion;
-        const justUpdated = agentUpdateSuccess.has(a.agent_id) && !needsUpdate && agentVer === latestAgentVersion;
+        const latestVer = getLatestVersionForAgent(a);
+        const needsUpdate = online && agentVer && latestVer && agentVer !== latestVer;
+        const justUpdated = agentUpdateSuccess.has(a.agent_id) && !needsUpdate && agentVer === latestVer;
         // Se acabou de atualizar, agenda remoção do badge após 10s (apenas na primeira renderização)
         if (justUpdated && agentUpdateSuccess.get(a.agent_id) === null) {
             const t = setTimeout(() => { agentUpdateSuccess.delete(a.agent_id); renderAgentList(undefined); }, 10000);
             agentUpdateSuccess.set(a.agent_id, t);
         }
         const btnUpdate = justUpdated
-            ? `<span class="btn-updated-mc">&#10003; Atualizado para v${latestAgentVersion}</span>`
+            ? `<span class="btn-updated-mc">&#10003; Atualizado para v${latestVer}</span>`
             : needsUpdate
-                ? `<button class="btn-update-mc" id="upd-${a.agent_id}" onclick="updateAgent('${a.agent_id}',this)">&#8593; Atualizar para v${latestAgentVersion}</button>`
+                ? `<button class="btn-update-mc" id="upd-${a.agent_id}" onclick="updateAgent('${a.agent_id}',this)">&#8593; Atualizar para v${latestVer}</button>`
                 : '';
         const footer = online
-            ? `${btnUpdate}${btnEdit}<button class="btn-connect" onclick="openConnectPrompt('${a.agent_id}','${name}')">&#9654; Conectar</button>`
+            ? `${btnEdit}<button class="btn-connect" onclick="openConnectPrompt('${a.agent_id}','${name}')">&#9654; Conectar</button>`
             : `${btnEdit}<span style="font-size:12px;color:var(--text-dim)">Indisponível</span>`;
 
         html += `
@@ -1351,6 +1366,7 @@ function renderCards(agents) {
                     <span class="mc-detail-value" style="${needsUpdate ? 'color:var(--warning)' : ''}">${agentVer ? 'v' + agentVer + (needsUpdate ? ' ⚠' : '') : '—'}</span>
                 </div>
             </div>
+            <div class="mc-update-bar">${btnUpdate}</div>
             <div class="mc-footer">${footer}</div>
         </div>`;
     }
@@ -1409,6 +1425,22 @@ function changeQuality(q) {
 
 function changeFps(f) {
     sendMessage('screen_config', { fps: parseInt(f) }, sessionId);
+}
+
+function changeMonitor(m) {
+    sendMessage('screen_config', { monitor: parseInt(m) }, sessionId);
+}
+
+function updateMonitorSelector(monitors) {
+    const sel = document.getElementById('monitorSelect');
+    if (!monitors || monitors.length <= 1) {
+        sel.style.display = 'none';
+        return;
+    }
+    sel.innerHTML = monitors.map(m =>
+        `<option value="${m.index}">Monitor ${m.index} (${m.width}×${m.height})</option>`
+    ).join('');
+    sel.style.display = '';
 }
 
 // ─── UI Helpers ───
@@ -1743,7 +1775,11 @@ function showAuthenticatedUI(userName) {
     document.getElementById('headerUserName').textContent = userName;
     document.getElementById('sidebar').classList.remove('hidden');
     // Carrega versão mais recente do agente e nicknames
-    fetch('/api/agent/version').then(r => r.json()).then(d => { latestAgentVersion = d.version || ''; }).catch(() => {});
+    fetch('/api/agent/version').then(r => r.json()).then(d => {
+        latestAgentVersions.linux   = d.linux   || d.version || '';
+        latestAgentVersions.windows = d.windows || '';
+        latestAgentVersions.pfsense = d.pfsense || '';
+    }).catch(() => {});
     fetchNicknames();
     // Conecta ao relay automaticamente após o login
     if (!ws || ws.readyState !== WebSocket.OPEN) {

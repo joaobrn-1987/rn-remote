@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-RemoteLink - Agente Linux
-Roda na máquina remota e conecta ao relay para acesso via terminal no browser.
+RNRemote - Agente pfSense (FreeBSD)
+Roda no pfSense e conecta ao relay para acesso via terminal no browser.
+
+Pré-requisitos no pfSense:
+    pkg install python3 py311-pip
+    pip install websockets
 
 Uso:
     python3 agent.py --relay wss://rnremote.joaoneto.tec.br/ws --id 123456789 --password suasenha
-    python3 agent.py --config /etc/rnremote/agent.json
+    python3 agent.py --config /usr/local/etc/rnremote/agent.json
 """
-
-from __future__ import annotations
 
 import asyncio
 import json
 import os
-import pty
 import time
 import logging
 import signal
@@ -28,28 +29,12 @@ import argparse
 import select
 import base64
 import shutil
+import subprocess
 import urllib.request
 
-AGENT_VERSION = "1.2.1"
+AGENT_VERSION = "1.0.0"
 
 import websockets
-
-# ─── Dependências opcionais (captura de tela e controle de input) ───────────────
-
-try:
-    import mss as _mss
-    from PIL import Image as _PILImage
-    import io as _io
-    HAS_SCREEN = True
-except ImportError:
-    HAS_SCREEN = False
-
-try:
-    from pynput.mouse import Button as _MBtn, Controller as _MouseCtrl
-    from pynput.keyboard import Key as _Key, Controller as _KbCtrl, KeyCode as _KeyCode
-    HAS_INPUT = True
-except ImportError:
-    HAS_INPUT = False
 
 PROTOCOL_VERSION = "1.0.0"
 HEARTBEAT_INTERVAL = 8
@@ -59,7 +44,7 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger("agent")
+logger = logging.getLogger("agent-pfsense")
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -68,7 +53,6 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def compute_binding_token(binding_secret: str, agent_id: str) -> str:
-    """Token que prova que esta máquina é a dona do agent_id."""
     return hashlib.sha256(f"{binding_secret}{agent_id}".encode()).hexdigest()
 
 
@@ -76,7 +60,7 @@ def get_system_info() -> dict:
     uname = platform.uname()
     return {
         "hostname": socket.gethostname(),
-        "os_type": "Linux",
+        "os_type": "FreeBSD",
         "os_version": f"{uname.system} {uname.release}",
         "username": os.environ.get("USER", os.environ.get("LOGNAME", "unknown")),
         "screen_width": 0,
@@ -84,80 +68,18 @@ def get_system_info() -> dict:
     }
 
 
-# ─── Virtual Console (TTY) ─────────────────────────────────────────────────────
-
-# Mapeamento VGA → índice de cor xterm (primeiros 16 da paleta 256)
-_VGA_TO_XTERM = [0, 4, 2, 6, 1, 5, 3, 7, 8, 12, 10, 14, 9, 13, 11, 15]
-
-
-def _vcs_to_ansi(rows: int, cols: int, cur_col: int, cur_row: int, screen: bytes) -> str:
-    """Converte buffer /dev/vcsa em sequência ANSI para o xterm.js."""
-    out = ['\x1b[?25l']   # oculta cursor
-    prev_fg = prev_bg = -1
-
-    for row in range(rows):
-        # Posicionamento absoluto por linha evita scroll quando xterm tem menos linhas que o VGA
-        out.append(f'\x1b[{row + 1};1H')
-        for col in range(cols):
-            idx = (row * cols + col) * 2
-            if idx + 1 >= len(screen):
-                out.append(' ')
-                continue
-            ch   = screen[idx]
-            attr = screen[idx + 1]
-            fg   = _VGA_TO_XTERM[attr & 0x0F]
-            bg   = _VGA_TO_XTERM[((attr >> 4) & 0x07) + (8 if (attr >> 7) & 1 else 0)]
-            if fg != prev_fg or bg != prev_bg:
-                out.append(f'\x1b[38;5;{fg}m\x1b[48;5;{bg}m')
-                prev_fg, prev_bg = fg, bg
-            out.append(chr(ch) if 32 <= ch < 127 else ' ')
-        # Reset cor e apaga até o fim da linha (corrige lado direito preto quando xterm é mais largo que 80 colunas)
-        out.append('\x1b[0m\x1b[K')
-        prev_fg = prev_bg = -1
-
-    # posiciona cursor e mostra
-    out.append(f'\x1b[{cur_row + 1};{cur_col + 1}H\x1b[?25h')
-    return ''.join(out)
-
-
-class VConsoleSession:
-    """Lê /dev/vcsaN e injeta input via TIOCSTI em /dev/ttyN."""
-
-    def __init__(self, tty_num: int = 1):
-        self.tty_num  = tty_num
-        self.vcs_path = f"/dev/vcsa{tty_num}"
-        self.tty_path = f"/dev/tty{tty_num}"
-        self.running  = False
-
-    def read(self):
-        """Lê o buffer de tela. Retorna (rows, cols, cur_col, cur_row, data) ou None."""
-        try:
-            with open(self.vcs_path, 'rb') as f:
-                raw = f.read()
-            if len(raw) < 4:
-                return None
-            return raw[0], raw[1], raw[2], raw[3], raw[4:]
-        except OSError:
-            return None
-
-    def send_input(self, text: str):
-        """Injeta teclas no TTY via TIOCSTI."""
-        try:
-            with open(self.tty_path, 'rb+', buffering=0) as tty:
-                fd = tty.fileno()
-                for byte in text.encode('utf-8', errors='replace'):
-                    fcntl.ioctl(fd, termios.TIOCSTI, bytes([byte]))
-        except Exception as e:
-            logger.warning(f"TIOCSTI falhou em {self.tty_path}: {e}")
-
-    def stop(self):
-        self.running = False
-
-
 # ─── Shell via PTY ─────────────────────────────────────────────────────────────
 
+def _find_shell() -> str:
+    """Retorna o melhor shell disponível no pfSense."""
+    for sh in ("/usr/local/bin/bash", "/bin/sh"):
+        if os.path.isfile(sh):
+            return sh
+    return "/bin/sh"
+
+
 class ShellSession:
-    """Gerencia um processo bash interativo via pseudo-terminal (PTY)."""
+    """Gerencia um processo de shell interativo via pseudo-terminal (PTY)."""
 
     def __init__(self):
         self.master_fd: int | None = None
@@ -165,16 +87,13 @@ class ShellSession:
         self.running: bool = False
 
     def start(self, cols: int = 120, rows: int = 30):
-        """Abre um PTY e faz fork para rodar bash."""
+        import pty as _pty
         self.master_fd, slave_fd = os.openpty()
         self._set_winsize(slave_fd, cols, rows)
-
-        # Echo habilitado — o xterm.js no browser exibe o que o PTY ecoa
 
         self.pid = os.fork()
 
         if self.pid == 0:
-            # ── Processo filho: vira o bash ──
             os.close(self.master_fd)
             os.setsid()
             fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
@@ -183,10 +102,10 @@ class ShellSession:
             os.dup2(slave_fd, 2)
             if slave_fd > 2:
                 os.close(slave_fd)
-            os.execv("/bin/login", ["/bin/login", "-p"])
+            shell = _find_shell()
+            os.execv(shell, [shell, "-l"])
             sys.exit(1)
 
-        # ── Processo pai ──
         os.close(slave_fd)
         self.running = True
         logger.info(f"Shell iniciado (PID {self.pid}, {cols}x{rows})")
@@ -208,7 +127,6 @@ class ShellSession:
                 self.running = False
 
     def read(self, timeout: float = 0.05) -> bytes | None:
-        """Lê saída do shell com timeout. Retorna None se o fd fechou."""
         if self.master_fd is None or not self.running:
             return None
         try:
@@ -241,163 +159,9 @@ class ShellSession:
         logger.info("Shell encerrado")
 
 
-# ─── Mapeamento de teclas (web → pynput) ───────────────────────────────────────
-
-def _build_key_map() -> dict:
-    if not HAS_INPUT:
-        return {}
-    return {
-        'Enter': _Key.enter, 'Return': _Key.enter,
-        'Escape': _Key.esc, 'Tab': _Key.tab,
-        'Backspace': _Key.backspace, 'Delete': _Key.delete,
-        'Insert': _Key.insert, 'Home': _Key.home, 'End': _Key.end,
-        'PageUp': _Key.page_up, 'PageDown': _Key.page_down,
-        'ArrowLeft': _Key.left, 'ArrowRight': _Key.right,
-        'ArrowUp': _Key.up, 'ArrowDown': _Key.down,
-        'F1':  _Key.f1,  'F2':  _Key.f2,  'F3':  _Key.f3,  'F4':  _Key.f4,
-        'F5':  _Key.f5,  'F6':  _Key.f6,  'F7':  _Key.f7,  'F8':  _Key.f8,
-        'F9':  _Key.f9,  'F10': _Key.f10, 'F11': _Key.f11, 'F12': _Key.f12,
-        'Control':      _Key.ctrl,    'ControlLeft': _Key.ctrl_l,  'ControlRight': _Key.ctrl_r,
-        'Shift':        _Key.shift,   'ShiftLeft':   _Key.shift_l, 'ShiftRight':   _Key.shift_r,
-        'Alt':          _Key.alt,     'AltLeft':     _Key.alt_l,   'AltRight':     _Key.alt_gr,
-        'Meta':         _Key.cmd,     'Super':       _Key.cmd,
-        'CapsLock':     _Key.caps_lock,
-        ' ':            _Key.space,   'Space':       _Key.space,
-    }
-
-_KEY_MAP = _build_key_map()
-
-
-# ─── Captura de tela ────────────────────────────────────────────────────────────
-
-def _find_display() -> str | None:
-    """Detecta o DISPLAY X11 ativo (necessário quando rodando como root/service)."""
-    if os.environ.get("DISPLAY"):
-        return os.environ["DISPLAY"]
-    # Tenta detectar a partir do processo Xorg
-    try:
-        import subprocess
-        out = subprocess.check_output(
-            ["pgrep", "-a", "Xorg"], text=True, timeout=2
-        )
-        for line in out.splitlines():
-            for part in line.split():
-                if part.startswith(":"):
-                    return part
-    except Exception:
-        pass
-    return ":0"
-
-
-class ScreenCapture:
-
-    def __init__(self):
-        self.quality = 50     # JPEG quality (10–95)
-        self.fps     = 15     # frames por segundo
-        self.monitor = 1      # 1-based (1 = primeiro monitor)
-        self._sct    = None
-
-    def _prepare(self):
-        display = _find_display()
-        if display:
-            os.environ.setdefault("DISPLAY", display)
-        # Tenta XAUTHORITY se não estiver definido
-        if not os.environ.get("XAUTHORITY"):
-            for path in (
-                f"/run/user/{os.getuid()}/Xauthority",
-                os.path.expanduser("~/.Xauthority"),
-                "/tmp/.Xauthority",
-            ):
-                if os.path.exists(path):
-                    os.environ["XAUTHORITY"] = path
-                    break
-        if not self._sct:
-            self._sct = _mss.mss()
-
-    def list_monitors(self) -> list:
-        try:
-            self._prepare()
-            return [
-                {"index": i, "width": m["width"], "height": m["height"]}
-                for i, m in enumerate(self._sct.monitors[1:], start=1)
-            ]
-        except Exception:
-            return []
-
-    def capture(self) -> str | None:
-        try:
-            self._prepare()
-            mons = self._sct.monitors
-            idx = self.monitor if 0 < self.monitor < len(mons) else 1
-            shot = self._sct.grab(mons[idx])
-            img = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-            buf = _io.BytesIO()
-            img.save(buf, "JPEG", quality=self.quality, optimize=False, subsampling=2)
-            return base64.b64encode(buf.getvalue()).decode()
-        except Exception as e:
-            logger.debug(f"Screen capture: {e}")
-            return None
-
-    def close(self):
-        if self._sct:
-            try:
-                self._sct.close()
-            except Exception:
-                pass
-            self._sct = None
-
-
-# ─── Controle de mouse e teclado ────────────────────────────────────────────────
-
-class InputController:
-
-    def __init__(self):
-        self._mouse = _MouseCtrl() if HAS_INPUT else None
-        self._kb    = _KbCtrl()    if HAS_INPUT else None
-
-    def mouse(self, action: str, x: int, y: int, dx: int = 0, dy: int = 0):
-        if not self._mouse:
-            return
-        try:
-            if action != 'scroll':
-                self._mouse.position = (x, y)
-            if action == 'left_down':
-                self._mouse.press(_MBtn.left)
-            elif action == 'left_up':
-                self._mouse.release(_MBtn.left)
-            elif action == 'right_down':
-                self._mouse.press(_MBtn.right)
-            elif action == 'right_up':
-                self._mouse.release(_MBtn.right)
-            elif action == 'middle_click':
-                self._mouse.click(_MBtn.middle)
-            elif action == 'left_dblclick':
-                self._mouse.click(_MBtn.left, 2)
-            elif action == 'scroll':
-                self._mouse.scroll(dx, dy)
-        except Exception as e:
-            logger.debug(f"Mouse: {e}")
-
-    def keyboard(self, action: str, key: str, code: str):
-        if not self._kb:
-            return
-        try:
-            pkey = _KEY_MAP.get(key)
-            if pkey is None and len(key) == 1:
-                pkey = _KeyCode.from_char(key)
-            if pkey is None:
-                return
-            if action == 'key_down':
-                self._kb.press(pkey)
-            elif action == 'key_up':
-                self._kb.release(pkey)
-        except Exception as e:
-            logger.debug(f"Keyboard: {e}")
-
-
 # ─── Agente ────────────────────────────────────────────────────────────────────
 
-class LinuxAgent:
+class PfSenseAgent:
 
     def __init__(self, relay_url: str, agent_id: str, password: str,
                  binding_secret: str = "", reconnect_delay: int = 10):
@@ -413,12 +177,6 @@ class LinuxAgent:
         self._shell_reader_task: asyncio.Task | None = None
         self._running = True
         self._uploads: dict = {}
-        self.vconsole: VConsoleSession | None = None
-        self._vconsole_task: asyncio.Task | None = None
-        self.screen      = ScreenCapture()    if HAS_SCREEN else None
-        self.input_ctrl  = InputController()  if HAS_INPUT  else None
-        self._screen_task: asyncio.Task | None = None
-        self._screen_active = False
 
     # ── Loop principal ─────────────────────────────────────────────────────────
 
@@ -446,8 +204,6 @@ class LinuxAgent:
             finally:
                 self.ws = None
                 self._stop_shell()
-                self._stop_vconsole()
-                self._stop_screen()
                 self.session_id = None
 
             if self._running:
@@ -506,7 +262,6 @@ class LinuxAgent:
             self.session_id = None
 
         elif t == "shell_start":
-            # Se shell já está rodando, aproveita a sessão existente
             if not self.shell or not self.shell.running:
                 await self._start_shell(
                     cols=data.get("cols", 120),
@@ -514,13 +269,11 @@ class LinuxAgent:
                 )
 
         elif t == "shell_input":
-            # Input raw do xterm.js (tecla a tecla, inclusive Ctrl+C, setas, tab...)
             raw = data.get("input", "")
             if raw and self.shell and self.shell.running:
                 self.shell.write(raw)
 
         elif t == "shell_command":
-            # Compatibilidade com clientes antigos
             cmd = data.get("command", "")
             if cmd and self.shell and self.shell.running:
                 self.shell.write(cmd + "\n")
@@ -558,61 +311,17 @@ class LinuxAgent:
         elif t == "system_info_request":
             await self._send_system_info()
 
-        elif t == "console_start":
-            await self._start_vconsole(data.get("tty", 1))
-
-        elif t == "console_input":
-            if self.vconsole and self.vconsole.running:
-                self.vconsole.send_input(data.get("input", ""))
-
-        elif t == "console_stop":
-            self._stop_vconsole()
-
-        elif t == "screen_request":
-            if data.get("action", "start") == "start":
-                await self._start_screen()
-            else:
-                self._stop_screen()
-
-        elif t == "screen_config":
-            if self.screen:
-                if "quality" in data:
-                    self.screen.quality = max(10, min(95, int(data["quality"])))
-                if "fps" in data:
-                    self.screen.fps = max(1, min(30, int(data["fps"])))
-                if "monitor" in data:
-                    self.screen.monitor = max(1, int(data["monitor"]))
-
-        elif t == "mouse_event":
-            if self.input_ctrl:
-                self.input_ctrl.mouse(
-                    action=data.get("action", ""),
-                    x=int(data.get("x", 0)),
-                    y=int(data.get("y", 0)),
-                    dx=int(data.get("dx", 0)),
-                    dy=int(data.get("dy", 0)),
-                )
-
-        elif t == "keyboard_event":
-            if self.input_ctrl:
-                self.input_ctrl.keyboard(
-                    action=data.get("action", ""),
-                    key=data.get("key", ""),
-                    code=data.get("code", ""),
-                )
-
         elif t == "update_agent":
             await self._handle_update(data)
 
         elif t == "pong":
-            pass  # heartbeat ok
+            pass
 
     # ── Auto-atualização ────────────────────────────────────────────────────────
 
     async def _handle_update(self, data: dict):
-        """Baixa a versão mais recente do agente e reinicia o processo."""
         panel_url = data.get("panel_url", "https://rnremote.joaoneto.tec.br").rstrip("/")
-        url        = f"{panel_url}/static/agent/agent.py"
+        url        = f"{panel_url}/static/agent/agent-pfsense.py"
         agent_path = os.path.abspath(__file__)
         tmp_path   = agent_path + ".update"
 
@@ -628,7 +337,6 @@ class LinuxAgent:
             shutil.move(tmp_path, agent_path)
             logger.info("Atualização baixada — reiniciando agente...")
 
-            # Fecha conexão antes de reiniciar
             self._running = False
             if self.ws:
                 try:
@@ -636,7 +344,6 @@ class LinuxAgent:
                 except Exception:
                     pass
 
-            # Substitui o processo atual pela nova versão
             await asyncio.sleep(0.5)
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
@@ -687,7 +394,7 @@ class LinuxAgent:
                                                "chunk": base64.b64encode(chunk).decode(),
                                                "direction": "download"},
                                       "session_id": self.session_id, "timestamp": time.time()})
-                    await asyncio.sleep(0)  # yield para não travar o event loop
+                    await asyncio.sleep(0)
             await self._send({"type": "file_complete",
                                "data": {"transfer_id": tid, "path": path, "direction": "download"},
                                "session_id": self.session_id, "timestamp": time.time()})
@@ -727,36 +434,34 @@ class LinuxAgent:
             "cpu_count":      os.cpu_count() or 1,
             "python_version": platform.python_version(),
         }
-        # OS via /etc/os-release (mais preciso que platform)
+
+        # OS via freebsd-version
         try:
-            os_fields = {}
-            with open("/etc/os-release") as f:
-                for line in f:
-                    line = line.strip()
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        os_fields[k] = v.strip('"')
-            info["os_pretty"]  = os_fields.get("PRETTY_NAME", "")
-            info["os_name"]    = os_fields.get("NAME", "")
-            info["os_version"] = os_fields.get("VERSION", os_fields.get("VERSION_ID", ""))
-            info["os_id"]      = os_fields.get("ID", "linux")
+            result = subprocess.run(["freebsd-version"], capture_output=True, text=True, timeout=5)
+            fbsd_ver = result.stdout.strip()
+            info["os_pretty"]  = f"pfSense / FreeBSD {fbsd_ver}"
+            info["os_name"]    = "FreeBSD"
+            info["os_version"] = fbsd_ver
+            info["os_id"]      = "freebsd"
         except Exception:
             info["os_pretty"] = f"{uname.system} {uname.release}"
-        # RAM via /proc/meminfo
+
+        # RAM via sysctl
         try:
-            mem = {}
-            with open("/proc/meminfo") as f:
-                for line in f:
-                    k, v = line.split(":", 1)
-                    mem[k.strip()] = int(v.split()[0])
-            total_kb = mem.get("MemTotal", 0)
-            avail_kb = mem.get("MemAvailable", 0)
-            used_kb  = total_kb - avail_kb
-            info["ram_total_mb"] = round(total_kb / 1024)
-            info["ram_used_mb"]  = round(used_kb  / 1024)
-            info["ram_percent"]  = round(used_kb / total_kb * 100, 1) if total_kb else 0
+            def _sysctl_int(name: str) -> int:
+                r = subprocess.run(["sysctl", "-n", name], capture_output=True, text=True, timeout=5)
+                return int(r.stdout.strip())
+
+            total_bytes = _sysctl_int("hw.physmem")
+            # Memória livre: hw.usermem é uma aproximação razoável
+            free_bytes  = _sysctl_int("hw.usermem")
+            used_bytes  = total_bytes - free_bytes
+            info["ram_total_mb"] = round(total_bytes / 1048576)
+            info["ram_used_mb"]  = round(used_bytes  / 1048576)
+            info["ram_percent"]  = round(used_bytes / total_bytes * 100, 1) if total_bytes else 0
         except Exception:
             pass
+
         # Disco raiz
         try:
             du = shutil.disk_usage("/")
@@ -765,104 +470,25 @@ class LinuxAgent:
             info["disk_percent"]  = round(du.used / du.total * 100, 1)
         except Exception:
             pass
-        # Uptime via /proc/uptime
+
+        # Uptime via sysctl kern.boottime
         try:
-            with open("/proc/uptime") as f:
-                secs = float(f.read().split()[0])
-            days, rem = divmod(int(secs), 86400)
-            hours, rem = divmod(rem, 3600)
-            mins = rem // 60
-            info["uptime"] = (f"{days}d " if days else "") + f"{hours:02d}:{mins:02d}"
+            r = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=5)
+            # Saída: { sec = 1700000000, usec = 0 } Thu Nov 14 ...
+            import re
+            m = re.search(r'sec\s*=\s*(\d+)', r.stdout)
+            if m:
+                boot_sec = int(m.group(1))
+                secs = int(time.time()) - boot_sec
+                days, rem = divmod(secs, 86400)
+                hours, rem = divmod(rem, 3600)
+                mins = rem // 60
+                info["uptime"] = (f"{days}d " if days else "") + f"{hours:02d}:{mins:02d}"
         except Exception:
             pass
-        # Monitores disponíveis
-        if self.screen:
-            monitors = self.screen.list_monitors()
-            if monitors:
-                info["monitors"]      = monitors
-                info["monitor_count"] = len(monitors)
+
         await self._send({"type": "system_info", "data": info,
                            "session_id": self.session_id, "timestamp": time.time()})
-
-    # ── Captura de tela ─────────────────────────────────────────────────────────
-
-    async def _start_screen(self):
-        if not self.screen:
-            await self._send({
-                "type": "error",
-                "data": {"message": "Captura de tela indisponível. Instale: pip install mss pillow"},
-                "session_id": self.session_id, "timestamp": time.time(),
-            })
-            return
-        self._screen_active = True
-        if not self._screen_task or self._screen_task.done():
-            self._screen_task = asyncio.create_task(self._screen_loop())
-
-    def _stop_screen(self):
-        self._screen_active = False
-        if self._screen_task:
-            self._screen_task.cancel()
-            self._screen_task = None
-
-    async def _screen_loop(self):
-        loop = asyncio.get_running_loop()
-        while self._screen_active and self.ws:
-            t0 = time.monotonic()
-            frame = await loop.run_in_executor(None, self.screen.capture)
-            if frame:
-                await self._send({
-                    "type": "screen_frame",
-                    "data": {"frame": frame},
-                    "session_id": self.session_id,
-                    "timestamp": time.time(),
-                })
-            elapsed  = time.monotonic() - t0
-            interval = 1.0 / max(1, self.screen.fps)
-            sleep    = max(0.0, interval - elapsed)
-            if sleep:
-                await asyncio.sleep(sleep)
-        logger.info("Screen loop finalizado")
-
-    # ── Virtual Console ─────────────────────────────────────────────────────────
-
-    async def _start_vconsole(self, tty_num: int = 1):
-        self._stop_vconsole()
-        vc = VConsoleSession(tty_num)
-        if not vc.read():
-            await self._send({"type": "console_frame",
-                               "data": {"output": f"\r\nErro: não foi possível abrir {vc.vcs_path}\r\nVerifique se o agente roda como root.\r\n"},
-                               "session_id": self.session_id, "timestamp": time.time()})
-            return
-        vc.running = True
-        self.vconsole = vc
-        self._vconsole_task = asyncio.create_task(self._poll_vconsole())
-        logger.info(f"Virtual console iniciado: tty{tty_num}")
-
-    async def _poll_vconsole(self):
-        prev_screen = None
-        loop = asyncio.get_running_loop()
-        while self.vconsole and self.vconsole.running:
-            result = await loop.run_in_executor(None, self.vconsole.read)
-            if result is None:
-                break
-            rows, cols, cur_col, cur_row, screen = result
-            if screen != prev_screen:
-                ansi = _vcs_to_ansi(rows, cols, cur_col, cur_row, screen)
-                await self._send({"type": "console_frame",
-                                   "data": {"output": ansi},
-                                   "session_id": self.session_id,
-                                   "timestamp": time.time()})
-                prev_screen = screen
-            await asyncio.sleep(0.1)   # 10 FPS — suficiente para console texto
-        logger.info("Virtual console finalizado")
-
-    def _stop_vconsole(self):
-        if self._vconsole_task:
-            self._vconsole_task.cancel()
-            self._vconsole_task = None
-        if self.vconsole:
-            self.vconsole.stop()
-            self.vconsole = None
 
     # ── Shell ──────────────────────────────────────────────────────────────────
 
@@ -873,7 +499,6 @@ class LinuxAgent:
         self._shell_reader_task = asyncio.create_task(self._read_shell_output())
 
     async def _read_shell_output(self):
-        """Lê saída do PTY em background e envia ao viewer."""
         loop = asyncio.get_running_loop()
         while self.shell and self.shell.running:
             data = await loop.run_in_executor(None, self.shell.read)
@@ -918,12 +543,12 @@ def load_config(path: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="RemoteLink - Agente Linux",
+        description="RNRemote - Agente pfSense",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemplos:
   python3 agent.py --relay wss://rnremote.joaoneto.tec.br/ws --id 123456789 --password minhasenha
-  python3 agent.py --config /etc/rnremote/agent.json
+  python3 agent.py --config /usr/local/etc/rnremote/agent.json
 
 Arquivo de configuração (JSON):
   {
@@ -940,7 +565,7 @@ Arquivo de configuração (JSON):
                         help="ID do agente (9 dígitos numéricos)")
     parser.add_argument("--password", default=os.environ.get("AGENT_PASSWORD", ""),
                         help="Senha de acesso ao agente")
-    parser.add_argument("--config",   default="/etc/rnremote/agent.json",
+    parser.add_argument("--config",   default="/usr/local/etc/rnremote/agent.json",
                         help="Arquivo de configuração JSON")
     parser.add_argument("--reconnect-delay", type=int, default=10,
                         help="Segundos entre tentativas de reconexão (padrão: 10)")
@@ -955,10 +580,9 @@ Arquivo de configuração (JSON):
     if not relay or not agent_id or not password:
         parser.print_help()
         print("\nErro: relay, agent_id e password são obrigatórios.")
-        print("Execute 'python3 setup.py' para configurar este agente.")
         sys.exit(1)
 
-    agent = LinuxAgent(
+    agent = PfSenseAgent(
         relay_url=relay,
         agent_id=agent_id,
         password=password,

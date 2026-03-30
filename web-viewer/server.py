@@ -213,14 +213,21 @@ class WebPanel:
         return web.json_response(stats)
 
     async def api_agent_version(self, req):
-        """Retorna a versão mais recente do agente disponível no servidor."""
-        try:
-            version_file = os.path.join(os.path.dirname(__file__), 'static/agent/version.txt')
-            with open(version_file) as f:
-                version = f.read().strip()
-        except Exception:
-            version = "unknown"
-        return web.json_response({"version": version})
+        """Retorna a versão de cada agente lendo diretamente dos arquivos .py."""
+        import re
+        agent_dir = os.path.join(os.path.dirname(__file__), 'static/agent')
+        versions = {}
+        for key, filename in [("linux", "agent.py"), ("windows", "agent-windows.py"), ("pfsense", "agent-pfsense.py")]:
+            try:
+                with open(os.path.join(agent_dir, filename)) as f:
+                    content = f.read(4096)
+                m = re.search(r'AGENT_VERSION\s*=\s*"([^"]+)"', content)
+                versions[key] = m.group(1) if m else "unknown"
+            except Exception:
+                versions[key] = "unknown"
+        # Mantém campo "version" (Linux) para compatibilidade
+        versions["version"] = versions["linux"]
+        return web.json_response(versions)
 
     async def api_agents(self, req):
         agents = await self.db.get_all_agents()
@@ -345,6 +352,81 @@ class WebPanel:
         await self.db.remove_agent_from_group(group_id, agent_id)
         return web.json_response({"ok": True})
 
+    # ─── API: Clientes ───
+
+    async def api_get_clients(self, req):
+        clients = await self.db.get_all_clients()
+        for c in clients:
+            for k, v in c.items():
+                if hasattr(v, 'isoformat'):
+                    c[k] = v.isoformat()
+        return web.json_response(clients)
+
+    async def api_create_client(self, req):
+        if not self._require_auth(req):
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        data = await req.json()
+        name = data.get("name", "").strip()
+        if not name:
+            return web.json_response({"ok": False, "error": "Nome obrigatório"}, status=400)
+        client = await self.db.create_client(
+            name=name,
+            document=data.get("document", ""),
+            email=data.get("email", ""),
+            phone=data.get("phone", ""),
+            notes=data.get("notes", ""),
+        )
+        for k, v in client.items():
+            if hasattr(v, 'isoformat'):
+                client[k] = v.isoformat()
+        return web.json_response({"ok": True, "client": client})
+
+    async def api_update_client(self, req):
+        if not self._require_auth(req):
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        client_id = int(req.match_info['client_id'])
+        data = await req.json()
+        await self.db.update_client(
+            client_id,
+            name=data.get("name"),
+            document=data.get("document"),
+            email=data.get("email"),
+            phone=data.get("phone"),
+            notes=data.get("notes"),
+        )
+        return web.json_response({"ok": True})
+
+    async def api_delete_client(self, req):
+        if not self._require_auth(req):
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        client_id = int(req.match_info['client_id'])
+        await self.db.delete_client(client_id)
+        return web.json_response({"ok": True})
+
+    async def api_get_client_agents(self, req):
+        client_id = int(req.match_info['client_id'])
+        agents = await self.db.get_client_agents(client_id)
+        return web.json_response(agents)
+
+    async def api_add_agent_to_client(self, req):
+        if not self._require_auth(req):
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        client_id = int(req.match_info['client_id'])
+        data = await req.json()
+        agent_id = data.get("agent_id", "").strip()
+        if not agent_id:
+            return web.json_response({"ok": False, "error": "agent_id obrigatório"}, status=400)
+        await self.db.add_agent_to_client(client_id, agent_id)
+        return web.json_response({"ok": True})
+
+    async def api_remove_agent_from_client(self, req):
+        if not self._require_auth(req):
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        client_id = int(req.match_info['client_id'])
+        agent_id = req.match_info['agent_id']
+        await self.db.remove_agent_from_client(client_id, agent_id)
+        return web.json_response({"ok": True})
+
     # ─── Health ───
 
     async def health(self, req):
@@ -391,6 +473,15 @@ def create_app(db_dsn: str):
     app.router.add_get("/api/groups/{group_id}/agents", panel.api_get_group_agents)
     app.router.add_post("/api/groups/{group_id}/agents", panel.api_add_agent_to_group)
     app.router.add_delete("/api/groups/{group_id}/agents/{agent_id}", panel.api_remove_agent_from_group)
+
+    # Clientes
+    app.router.add_get("/api/clients", panel.api_get_clients)
+    app.router.add_post("/api/clients", panel.api_create_client)
+    app.router.add_put("/api/clients/{client_id}", panel.api_update_client)
+    app.router.add_delete("/api/clients/{client_id}", panel.api_delete_client)
+    app.router.add_get("/api/clients/{client_id}/agents", panel.api_get_client_agents)
+    app.router.add_post("/api/clients/{client_id}/agents", panel.api_add_agent_to_client)
+    app.router.add_delete("/api/clients/{client_id}/agents/{agent_id}", panel.api_remove_agent_from_client)
 
     # Arquivos estáticos
     app.router.add_static("/static/", STATIC_DIR, name="static")

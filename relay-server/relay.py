@@ -486,7 +486,7 @@ class RelayServer:
         async with serve(
             self.handle_connection, self.host, self.port,
             max_size=10 * 1024 * 1024,
-            ping_interval=20, ping_timeout=60,
+            ping_interval=10, ping_timeout=20,
             compression="deflate"
         ):
             await asyncio.Future()

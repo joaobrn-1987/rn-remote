@@ -35,6 +35,7 @@ class Database:
         logger.info("Conectado ao PostgreSQL")
         await self.ensure_agent_columns()
         await self.ensure_group_tables()
+        await self.ensure_client_tables()
 
     async def close(self):
         if self.pool:
@@ -478,6 +479,101 @@ class Database:
             await conn.execute(
                 "DELETE FROM agent_group_members WHERE group_id = $1 AND agent_id = $2",
                 group_id, agent_id
+            )
+
+    # ─── Clientes ───
+
+    async def ensure_client_tables(self):
+        """Cria tabelas de clientes se não existirem."""
+        async with self.pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS clients (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(200) NOT NULL,
+                    document VARCHAR(20) DEFAULT '',
+                    email VARCHAR(200) DEFAULT '',
+                    phone VARCHAR(30) DEFAULT '',
+                    notes TEXT DEFAULT '',
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS client_agents (
+                    client_id INT REFERENCES clients(id) ON DELETE CASCADE,
+                    agent_id VARCHAR(20) REFERENCES agents(agent_id) ON DELETE CASCADE,
+                    PRIMARY KEY (client_id, agent_id)
+                )
+            """)
+
+    async def get_all_clients(self) -> List[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT c.*, COUNT(ca.agent_id) AS agent_count
+                FROM clients c
+                LEFT JOIN client_agents ca ON ca.client_id = c.id
+                GROUP BY c.id ORDER BY c.name
+            """)
+            return [dict(r) for r in rows]
+
+    async def get_client(self, client_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM clients WHERE id = $1", client_id)
+            return dict(row) if row else None
+
+    async def create_client(self, name: str, document: str = '', email: str = '',
+                            phone: str = '', notes: str = '') -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO clients (name, document, email, phone, notes) "
+                "VALUES ($1, $2, $3, $4, $5) RETURNING *",
+                name, document, email, phone, notes
+            )
+            return dict(row) if row else {}
+
+    async def update_client(self, client_id: int, name: str = None, document: str = None,
+                            email: str = None, phone: str = None, notes: str = None) -> bool:
+        fields, values, idx = [], [], 1
+        for col, val in [('name', name), ('document', document), ('email', email),
+                         ('phone', phone), ('notes', notes)]:
+            if val is not None:
+                fields.append(f"{col} = ${idx}"); values.append(val); idx += 1
+        if not fields:
+            return False
+        values.append(client_id)
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                f"UPDATE clients SET {', '.join(fields)} WHERE id = ${idx}", *values
+            )
+            return result == "UPDATE 1"
+
+    async def delete_client(self, client_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM clients WHERE id = $1", client_id)
+            return result == "DELETE 1"
+
+    async def get_client_agents(self, client_id: int) -> List[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT a.agent_id, a.nickname, a.hostname, a.os_type, a.username,
+                       a.ip_address, a.is_online
+                FROM agents a
+                JOIN client_agents ca ON ca.agent_id = a.agent_id
+                WHERE ca.client_id = $1 ORDER BY a.hostname
+            """, client_id)
+            return [dict(r) for r in rows]
+
+    async def add_agent_to_client(self, client_id: int, agent_id: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO client_agents (client_id, agent_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                client_id, agent_id
+            )
+
+    async def remove_agent_from_client(self, client_id: int, agent_id: str):
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM client_agents WHERE client_id = $1 AND agent_id = $2",
+                client_id, agent_id
             )
 
     # ─── Estatísticas ───
