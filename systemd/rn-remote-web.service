@@ -1,0 +1,18 @@
+[Unit]
+Description=RNRemote Web Panel
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=remotelink
+Group=remotelink
+WorkingDirectory=/opt/rn-remote
+EnvironmentFile=/etc/rn-remote/env
+ExecStart=/opt/rn-remote/venv/bin/python web-viewer/server.py --host 127.0.0.1 --port 8081
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
