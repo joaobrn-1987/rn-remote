@@ -32,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.1.6"
+AGENT_VERSION = "1.1.7"
 
 import websockets
 
@@ -71,20 +71,49 @@ def get_system_info() -> dict:
 
 # ─── Samba / Active Directory ─────────────────────────────────────────────────
 
-SAMBA_BIN     = "/usr/local/samba/bin"
-SAMBA_SBIN    = "/usr/local/samba/sbin"
-SAMBA_PRIVATE = "/usr/local/samba/private"
-SAMBA_ETC     = "/usr/local/samba/etc"
-SYSVOL_PATH   = "/usr/local/samba/var/locks/sysvol"
+# Paths do Samba — preenchidos dinamicamente por _detect_samba()
+SAMBA_BIN     = ""
+SAMBA_SBIN    = ""
+SAMBA_PRIVATE = ""
+SAMBA_ETC     = ""
+SYSVOL_PATH   = ""
+
+# Candidatos por distro (ordem de preferência)
+_SAMBA_CANDIDATES = [
+    # CentOS / RHEL / AlmaLinux — Samba compilado do fonte
+    {
+        "bin":     "/usr/local/samba/bin",
+        "sbin":    "/usr/local/samba/sbin",
+        "private": "/usr/local/samba/private",
+        "etc":     "/usr/local/samba/etc",
+        "sysvol":  "/usr/local/samba/var/locks/sysvol",
+    },
+    # Ubuntu / Debian — pacote do sistema
+    {
+        "bin":     "/usr/bin",
+        "sbin":    "/usr/sbin",
+        "private": "/var/lib/samba/private",
+        "etc":     "/etc/samba",
+        "sysvol":  "/var/lib/samba/sysvol",
+    },
+]
 
 
 def _detect_samba() -> bool:
-    """Retorna True se Samba AD DC está instalado nesta máquina."""
-    return (
-        os.path.isdir(SAMBA_BIN) and
-        os.path.isfile(os.path.join(SAMBA_BIN, "samba-tool")) and
-        os.path.isfile(os.path.join(SAMBA_PRIVATE, "sam.ldb"))
-    )
+    """Detecta instalação do Samba AD DC e configura paths globais. Retorna True se encontrado."""
+    global SAMBA_BIN, SAMBA_SBIN, SAMBA_PRIVATE, SAMBA_ETC, SYSVOL_PATH
+    for paths in _SAMBA_CANDIDATES:
+        tool = os.path.join(paths["bin"], "samba-tool")
+        ldb  = os.path.join(paths["private"], "sam.ldb")
+        if os.path.isfile(tool) and os.path.isfile(ldb):
+            SAMBA_BIN     = paths["bin"]
+            SAMBA_SBIN    = paths["sbin"]
+            SAMBA_PRIVATE = paths["private"]
+            SAMBA_ETC     = paths["etc"]
+            SYSVOL_PATH   = paths["sysvol"]
+            logger.info(f"Samba encontrado em {paths['bin']}")
+            return True
+    return False
 
 
 def _ad_run_cmd(cmd_list):
