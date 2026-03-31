@@ -32,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.1.7"
+AGENT_VERSION = "1.1.8"
 
 import websockets
 
@@ -116,6 +116,21 @@ def _detect_samba() -> bool:
     return False
 
 
+# Padrões de warnings conhecidos do Samba que não são erros reais
+_SAMBA_WARN_PATTERNS = [
+    "option 'server role' in section 'global' already exists",
+    "lpcfg_do_global_parameter: WARNING:",
+    "WARNING: The \"enable privileges\" option is deprecated",
+    "rlimit_max: increasing rlimit_max",
+]
+
+def _strip_samba_warnings(text: str) -> str:
+    """Remove linhas de warning conhecidas do Samba do output."""
+    lines = [l for l in text.splitlines()
+             if not any(w in l for w in _SAMBA_WARN_PATTERNS)]
+    return "\n".join(lines).strip()
+
+
 def _ad_run_cmd(cmd_list):
     env = os.environ.copy()
     path = env.get("PATH", "")
@@ -124,7 +139,11 @@ def _ad_run_cmd(cmd_list):
         env["PATH"] = f"{extra}:{path}"
     try:
         proc = subprocess.run(cmd_list, capture_output=True, text=True, env=env, timeout=30)
-        return {"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode}
+        return {
+            "stdout": proc.stdout,
+            "stderr": _strip_samba_warnings(proc.stderr),
+            "returncode": proc.returncode,
+        }
     except subprocess.TimeoutExpired:
         return {"stdout": "", "stderr": "Timeout ao executar comando", "returncode": -1}
     except Exception as e:
@@ -495,14 +514,25 @@ class _GPOManager:
         if r["returncode"] != 0: return {"error": r["stderr"]}
         gpos, current = [], {}
         for line in r["stdout"].splitlines():
-            if line.startswith("GPO") and ":" not in line:
+            line = line.strip()
+            if not line:
                 if current: gpos.append(current)
                 current = {}
             elif ":" in line:
                 key, _, value = line.partition(":")
                 current[key.strip()] = value.strip()
         if current: gpos.append(current)
-        return {"gpos": gpos}
+        # Normaliza chaves para o formato esperado pelo frontend
+        normalized = []
+        for g in gpos:
+            normalized.append({
+                "Display name": g.get("display name") or g.get("Display name", ""),
+                "GPO":          g.get("GPO", ""),
+                "Path":         g.get("path", ""),
+                "dn":           g.get("dn", ""),
+                "version":      g.get("version", ""),
+            })
+        return {"gpos": [n for n in normalized if n["GPO"] or n["Display name"]]}
 
     def get_gpo(self, gpo_guid):
         r = _samba_tool("gpo", "show", gpo_guid)
@@ -566,25 +596,38 @@ class _GPOManager:
 
 class _ShareManager:
 
+    # Compartilhamentos de sistema que não precisam aparecer na lista
+    _SYSTEM_SHARES = {"IPC$", "SMB1", "print$"}
+
     def list_shares(self):
-        r = _ad_run_cmd([os.path.join(SAMBA_BIN, "smbclient"), "-L", "localhost", "-N", "--no-pass"])
-        shares, in_shares = [], False
-        for line in r["stdout"].splitlines():
-            line = line.strip()
-            if "Sharename" in line:
-                in_shares = True; continue
-            if in_shares:
-                if not line or line.startswith("-"): continue
-                if line.startswith("Server") or line.startswith("Workgroup"): break
-                parts = line.split(None, 2)
-                if len(parts) >= 2:
-                    shares.append({"name": parts[0], "type": parts[1] if len(parts) > 1 else "",
-                                   "comment": parts[2] if len(parts) > 2 else ""})
+        """Lê compartilhamentos diretamente do smb.conf — sem precisar de credenciais."""
+        cfg = configparser.ConfigParser()
+        cfg.read(os.path.join(SAMBA_ETC, "smb.conf"))
+        shares = []
+        for section in cfg.sections():
+            if section.lower() == "global":
+                continue
+            share_type = "Disk"
+            if section in ("IPC$", "SMB1"):
+                share_type = "IPC"
+            path    = cfg.get(section, "path", fallback="")
+            comment = cfg.get(section, "comment", fallback="")
+            shares.append({"name": section, "type": share_type,
+                           "comment": comment, "path": path})
         return {"shares": shares}
 
     def get_acl(self, share, path="/"):
-        r = _ad_run_cmd([os.path.join(SAMBA_BIN, "smbcacls"), f"//localhost/{share}", path, "-N"])
-        return {"acl": r["stdout"], "error": r["stderr"] if r["returncode"] != 0 else ""}
+        """Usa samba-tool ntacl get com o path local — não precisa de conexão SMB."""
+        cfg = configparser.ConfigParser()
+        cfg.read(os.path.join(SAMBA_ETC, "smb.conf"))
+        local_path = cfg.get(share, "path", fallback="") if cfg.has_section(share) else ""
+        if not local_path:
+            return {"acl": "", "error": f"Compartilhamento '{share}' não encontrado no smb.conf"}
+        target = os.path.join(local_path, path.lstrip("/")) if path != "/" else local_path
+        r = _samba_tool("ntacl", "get", target)
+        if r["returncode"] != 0:
+            return {"acl": "", "error": r["stderr"] or f"Falha ao ler ACL de {target}"}
+        return {"acl": r["stdout"], "error": ""}
 
     def set_acl(self, share, path, acl_string, action="set"):
         flag = {"set": "-S", "add": "-a", "delete": "-D", "modify": "-M"}.get(action.lower(), "-S")
@@ -643,20 +686,46 @@ class _ShareManager:
 
 class _DNSManager:
 
+    def _dns_ldbsearch(self, base, expression=None, attrs=None):
+        """Pesquisa diretamente no sam.ldb sem precisar de credenciais de rede."""
+        return _ldbsearch(base, "subtree", attrs, expression)
+
     def list_zones(self):
-        r = _samba_tool("dns", "zonelist", "localhost")
-        return {"output": r["stdout"], "error": r["stderr"] if r["returncode"] != 0 else ""}
+        domain_dn = _ad_get_domain_dn()
+        zones = []
+        for part_prefix in ["DC=DomainDnsZones", "DC=ForestDnsZones"]:
+            base = f"{part_prefix},{domain_dn}"
+            r = self._dns_ldbsearch(base, "(objectClass=dnsZone)", ["name"])
+            if r["returncode"] == 0:
+                for e in _parse_ldb_output(r["stdout"]):
+                    name = e.get("name", "")
+                    if name and not name.startswith(".."):
+                        zones.append({"name": name, "partition": part_prefix.replace("DC=", "")})
+        if zones:
+            lines = [f"  {z['name']}  [{z['partition']}]" for z in zones]
+            return {"output": "Zonas DNS encontradas:\n" + "\n".join(lines), "zones": zones}
+        return {"output": "Nenhuma zona DNS encontrada.", "zones": []}
 
     def list_records(self, zone):
-        r = _samba_tool("dns", "query", "localhost", zone, "@", "ALL")
-        return {"output": r["stdout"], "error": r["stderr"] if r["returncode"] != 0 else ""}
+        domain_dn = _ad_get_domain_dn()
+        for part_prefix in ["DC=DomainDnsZones", "DC=ForestDnsZones"]:
+            base = f"DC={zone},CN=MicrosoftDNS,{part_prefix},{domain_dn}"
+            r = self._dns_ldbsearch(base, "(objectClass=dnsNode)", ["name", "dnsRecord"])
+            if r["returncode"] == 0:
+                entries = _parse_ldb_output(r["stdout"])
+                if entries:
+                    lines = [e.get("name", "") for e in entries if e.get("name")]
+                    return {"output": f"Registros na zona {zone}:\n" + "\n".join(f"  {l}" for l in lines)}
+        return {"output": f"Zona '{zone}' não encontrada.", "error": ""}
 
     def add_record(self, zone, name, record_type, data):
-        r = _samba_tool("dns", "add", "localhost", zone, name, record_type, data)
+        r = _samba_tool("dns", "add", "127.0.0.1", zone, name, record_type, data,
+                        "--use-kerberos=auto")
         return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
 
     def delete_record(self, zone, name, record_type, data):
-        r = _samba_tool("dns", "delete", "localhost", zone, name, record_type, data)
+        r = _samba_tool("dns", "delete", "127.0.0.1", zone, name, record_type, data,
+                        "--use-kerberos=auto")
         return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
 
 
