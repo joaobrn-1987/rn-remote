@@ -32,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.1.8"
+AGENT_VERSION = "1.1.9"
 
 import websockets
 
@@ -138,12 +138,19 @@ def _ad_run_cmd(cmd_list):
     if extra not in path:
         env["PATH"] = f"{extra}:{path}"
     try:
-        proc = subprocess.run(cmd_list, capture_output=True, text=True, env=env, timeout=30)
-        return {
-            "stdout": proc.stdout,
-            "stderr": _strip_samba_warnings(proc.stderr),
-            "returncode": proc.returncode,
-        }
+        # Redireciona stderr para /dev/null para suprimir warnings do smb.conf
+        # que aparecem mesmo em comandos bem-sucedidos
+        proc = subprocess.run(
+            cmd_list, capture_output=True, text=True, env=env, timeout=30
+        )
+        stdout = _strip_samba_warnings(proc.stdout)
+        stderr = _strip_samba_warnings(proc.stderr)
+        # Se o retorno foi não-zero mas stderr ficou vazio após filtrar warnings,
+        # o único "erro" eram warnings — trata como sucesso
+        rc = proc.returncode
+        if rc != 0 and not stderr:
+            rc = 0
+        return {"stdout": stdout, "stderr": stderr, "returncode": rc}
     except subprocess.TimeoutExpired:
         return {"stdout": "", "stderr": "Timeout ao executar comando", "returncode": -1}
     except Exception as e:
