@@ -7,6 +7,7 @@ Uso:
     python3 agent.py --relay wss://rnremote.joaoneto.tec.br/ws --id 123456789 --password suasenha
     python3 agent.py --config /etc/rnremote/agent.json
 """
+from __future__ import annotations
 
 import asyncio
 import configparser
@@ -31,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.1.5"
+AGENT_VERSION = "1.1.6"
 
 import websockets
 
