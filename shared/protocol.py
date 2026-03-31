@@ -64,6 +64,10 @@ class MessageType(str, Enum):
     BROWSER_RESIZE = "browser_resize"
     BROWSER_STOP = "browser_stop"
     BROWSER_STATUS = "browser_status"
+    # Active Directory (Samba AD DC)
+    AD_REQUEST = "ad_request"
+    AD_RESPONSE = "ad_response"
+    AD_EVENT = "ad_event"
     ERROR = "error"
     AUTH_SUCCESS = "auth_success"
     AUTH_FAILURE = "auth_failure"

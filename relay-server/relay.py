@@ -49,6 +49,8 @@ class LiveAgent:
     screen_width: int = 0
     screen_height: int = 0
     version: str = ""
+    ad_agent: bool = False
+    ad_version: str = ""
 
 
 @dataclass
@@ -140,7 +142,9 @@ class RelayServer:
                    MessageType.CONSOLE_FRAME.value,
                    "browser_frame",
                    "browser_html",
-                   "browser_status"):
+                   "browser_status",
+                   "ad_response",
+                   "ad_event"):
             await self.relay_to_viewer(ws, msg)
         # Relay: viewer -> agent
         elif t in (MessageType.SCREEN_REQUEST.value,
@@ -163,7 +167,8 @@ class RelayServer:
                    "browser_input",
                    "browser_scroll",
                    "browser_resize",
-                   "browser_stop"):
+                   "browser_stop",
+                   "ad_request"):
             await self.relay_to_agent(ws, msg)
         # Relay: ambos
         elif t in (MessageType.SHELL_STOP.value,
@@ -231,6 +236,8 @@ class RelayServer:
             screen_width=data.get("screen_width", 0),
             screen_height=data.get("screen_height", 0),
             version=data.get("version", ""),
+            ad_agent=data.get("ad_agent", False),
+            ad_version=data.get("ad_version", ""),
         )
         self.agents[agent_id] = agent
         self.ws_to_agent[ws] = agent_id
@@ -265,6 +272,8 @@ class RelayServer:
             "active_sessions": len(a.active_sessions),
             "is_online": True,
             "version": a.version,
+            "ad_agent": a.ad_agent,
+            "ad_version": a.ad_version,
         } for a in self.agents.values()]
         await self._send(ws, create_message(MessageType.AGENT_LIST,
             data={"agents": agents}))
