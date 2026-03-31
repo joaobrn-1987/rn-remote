@@ -8,15 +8,16 @@ Uso:
     python3 agent.py --config /etc/rnremote/agent.json
 """
 
-from __future__ import annotations
-
 import asyncio
+import configparser
 import json
 import os
 import pty
 import time
 import logging
 import signal
+import stat
+import subprocess
 import sys
 import fcntl
 import termios
@@ -30,29 +31,12 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.3.1"
+AGENT_VERSION = "1.1.5"
 
 import websockets
 
-# ─── Dependências opcionais (captura de tela e controle de input) ───────────────
-
-try:
-    import mss as _mss
-    from PIL import Image as _PILImage
-    import io as _io
-    HAS_SCREEN = True
-except ImportError:
-    HAS_SCREEN = False
-
-try:
-    from pynput.mouse import Button as _MBtn, Controller as _MouseCtrl
-    from pynput.keyboard import Key as _Key, Controller as _KbCtrl, KeyCode as _KeyCode
-    HAS_INPUT = True
-except ImportError:
-    HAS_INPUT = False
-
 PROTOCOL_VERSION = "1.0.0"
-HEARTBEAT_INTERVAL = 8
+HEARTBEAT_INTERVAL = 15
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,6 +66,596 @@ def get_system_info() -> dict:
         "screen_width": 0,
         "screen_height": 0,
     }
+
+
+# ─── Samba / Active Directory ─────────────────────────────────────────────────
+
+SAMBA_BIN     = "/usr/local/samba/bin"
+SAMBA_SBIN    = "/usr/local/samba/sbin"
+SAMBA_PRIVATE = "/usr/local/samba/private"
+SAMBA_ETC     = "/usr/local/samba/etc"
+SYSVOL_PATH   = "/usr/local/samba/var/locks/sysvol"
+
+
+def _detect_samba() -> bool:
+    """Retorna True se Samba AD DC está instalado nesta máquina."""
+    return (
+        os.path.isdir(SAMBA_BIN) and
+        os.path.isfile(os.path.join(SAMBA_BIN, "samba-tool")) and
+        os.path.isfile(os.path.join(SAMBA_PRIVATE, "sam.ldb"))
+    )
+
+
+def _ad_run_cmd(cmd_list):
+    env = os.environ.copy()
+    path = env.get("PATH", "")
+    extra = f"{SAMBA_BIN}:{SAMBA_SBIN}"
+    if extra not in path:
+        env["PATH"] = f"{extra}:{path}"
+    try:
+        proc = subprocess.run(cmd_list, capture_output=True, text=True, env=env, timeout=30)
+        return {"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode}
+    except subprocess.TimeoutExpired:
+        return {"stdout": "", "stderr": "Timeout ao executar comando", "returncode": -1}
+    except Exception as e:
+        return {"stdout": "", "stderr": str(e), "returncode": -1}
+
+
+def _samba_tool(*args):
+    return _ad_run_cmd([os.path.join(SAMBA_BIN, "samba-tool")] + list(args))
+
+
+def _ldbsearch(base, scope="subtree", attrs=None, expression=None):
+    cmd = [os.path.join(SAMBA_BIN, "ldbsearch"), "-H", os.path.join(SAMBA_PRIVATE, "sam.ldb")]
+    if base:
+        cmd += ["-b", base]
+    if scope:
+        cmd += ["-s", scope]
+    if expression:
+        cmd.append(expression)
+    if attrs:
+        cmd.extend(attrs if isinstance(attrs, list) else attrs.split())
+    return _ad_run_cmd(cmd)
+
+
+def _ldbmodify(ldif_string):
+    cmd = [os.path.join(SAMBA_BIN, "ldbmodify"), "-H", os.path.join(SAMBA_PRIVATE, "sam.ldb")]
+    try:
+        proc = subprocess.run(cmd, input=ldif_string, capture_output=True, text=True, timeout=30)
+        return {"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode}
+    except Exception as e:
+        return {"stdout": "", "stderr": str(e), "returncode": -1}
+
+
+def _ldbadd(ldif_string):
+    cmd = [os.path.join(SAMBA_BIN, "ldbadd"), "-H", os.path.join(SAMBA_PRIVATE, "sam.ldb")]
+    try:
+        proc = subprocess.run(cmd, input=ldif_string, capture_output=True, text=True, timeout=30)
+        return {"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode}
+    except Exception as e:
+        return {"stdout": "", "stderr": str(e), "returncode": -1}
+
+
+def _ldbdel(dn):
+    return _ad_run_cmd([os.path.join(SAMBA_BIN, "ldbdel"), "-H",
+                        os.path.join(SAMBA_PRIVATE, "sam.ldb"), dn])
+
+
+def _parse_ldb_output(stdout):
+    entries = []
+    current = {}
+    for line in stdout.splitlines():
+        if line.startswith("#"):
+            continue
+        if not line.strip():
+            if current:
+                entries.append(current)
+                current = {}
+            continue
+        if line.startswith("dn: "):
+            if current:
+                entries.append(current)
+            current = {"dn": line[4:].strip()}
+        elif ": " in line:
+            key, _, value = line.partition(": ")
+            key = key.strip(); value = value.strip()
+            if key in current:
+                existing = current[key]
+                current[key] = existing + [value] if isinstance(existing, list) else [existing, value]
+            else:
+                current[key] = value
+    if current:
+        entries.append(current)
+    return [e for e in entries if e.get("dn") and not e["dn"].startswith("ref:")]
+
+
+def _ad_get_realm():
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.join(SAMBA_ETC, "smb.conf"))
+    return cfg.get("global", "realm", fallback="").strip()
+
+
+def _ad_get_domain_name():
+    cfg = configparser.ConfigParser()
+    cfg.read(os.path.join(SAMBA_ETC, "smb.conf"))
+    return cfg.get("global", "workgroup", fallback="").strip()
+
+
+def _ad_get_domain_dn():
+    realm = _ad_get_realm()
+    if not realm:
+        return ""
+    return ",".join(f"DC={p}" for p in realm.lower().split("."))
+
+
+class _UserManager:
+
+    _USER_ATTRS = [
+        "sAMAccountName", "cn", "givenName", "sn", "displayName", "mail",
+        "description", "distinguishedName", "memberOf", "userAccountControl",
+        "whenCreated", "whenChanged", "lastLogon", "pwdLastSet", "accountExpires",
+        "telephoneNumber", "title", "department", "company",
+        "physicalDeliveryOfficeName", "homeDirectory", "homeDrive",
+        "scriptPath", "profilePath", "uidNumber", "gidNumber",
+        "loginShell", "unixHomeDirectory", "userPrincipalName"
+    ]
+
+    def _decode_uac(self, entry):
+        uac = 0
+        try:
+            uac = int(entry.get("userAccountControl", "0") or "0")
+        except (ValueError, TypeError):
+            pass
+        entry["_disabled"]        = bool(uac & 0x0002)
+        entry["_locked"]          = bool(uac & 0x0010)
+        entry["_pwdNeverExpires"] = bool(uac & 0x10000)
+        entry["_pwdNotRequired"]  = bool(uac & 0x0020)
+        return entry
+
+    def list_users(self, ou=None):
+        base = ou or _ad_get_domain_dn()
+        r = _ldbsearch(base, "subtree", self._USER_ATTRS, "(&(objectClass=user)(objectCategory=person))")
+        if r["returncode"] != 0:
+            return {"error": r["stderr"]}
+        users = []
+        for entry in _parse_ldb_output(r["stdout"]):
+            sam = entry.get("sAMAccountName", "")
+            if isinstance(sam, list): sam = sam[0]
+            if sam.endswith("$") or sam.lower() == "krbtgt":
+                continue
+            users.append(self._decode_uac(entry))
+        return {"users": users}
+
+    def get_user(self, username):
+        r = _ldbsearch(_ad_get_domain_dn(), "subtree", self._USER_ATTRS,
+                       f"(sAMAccountName={username})")
+        if r["returncode"] != 0:
+            return {"error": r["stderr"]}
+        entries = _parse_ldb_output(r["stdout"])
+        if not entries:
+            return {"error": "Usuário não encontrado"}
+        return {"user": self._decode_uac(entries[0])}
+
+    def create_user(self, username, password, given_name="", surname="",
+                    mail="", ou="", must_change_password=False, unix_attrs=None):
+        args = ["user", "create", username, password]
+        if given_name: args += ["--given-name", given_name]
+        if surname:    args += ["--surname", surname]
+        if mail:       args += ["--mail-address", mail]
+        if ou:         args += ["--userou", ou]
+        if must_change_password: args.append("--must-change-at-next-login")
+        if unix_attrs:
+            if unix_attrs.get("uid_number"):   args += ["--uid-number",   str(unix_attrs["uid_number"])]
+            if unix_attrs.get("gid_number"):   args += ["--gid-number",   str(unix_attrs["gid_number"])]
+            if unix_attrs.get("login_shell"):  args += ["--login-shell",  unix_attrs["login_shell"]]
+            if unix_attrs.get("unix_home"):    args += ["--unix-home",    unix_attrs["unix_home"]]
+        r = _samba_tool(*args)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def modify_user(self, username, attrs_dict):
+        user_data = self.get_user(username)
+        if "error" in user_data: return user_data
+        dn = user_data["user"]["distinguishedName"]
+        if isinstance(dn, list): dn = dn[0]
+        lines = [f"dn: {dn}", "changetype: modify"]
+        for attr, value in attrs_dict.items():
+            if value is None or value == "":
+                lines += [f"delete: {attr}", "-"]
+            else:
+                lines += [f"replace: {attr}", f"{attr}: {value}", "-"]
+        r = _ldbmodify("\n".join(lines) + "\n")
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def delete_user(self, username):
+        r = _samba_tool("user", "delete", username)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def enable_user(self, username):
+        r = _samba_tool("user", "enable", username)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def disable_user(self, username):
+        r = _samba_tool("user", "disable", username)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def reset_password(self, username, new_password, must_change=False):
+        args = ["user", "setpassword", username, f"--newpassword={new_password}"]
+        if must_change: args.append("--must-change-at-next-login")
+        r = _samba_tool(*args)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def unlock_user(self, username):
+        user_data = self.get_user(username)
+        if "error" in user_data: return user_data
+        dn = user_data["user"]["distinguishedName"]
+        if isinstance(dn, list): dn = dn[0]
+        r = _ldbmodify(f"dn: {dn}\nchangetype: modify\nreplace: lockoutTime\nlockoutTime: 0\n")
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def move_user(self, username, target_ou):
+        r = _samba_tool("user", "move", username, target_ou)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def get_user_groups(self, username):
+        r = _samba_tool("user", "getgroups", username)
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        return {"groups": [g.strip() for g in r["stdout"].splitlines() if g.strip()]}
+
+
+class _GroupManager:
+
+    def list_groups(self, ou=None):
+        base = ou or _ad_get_domain_dn()
+        attrs = ["cn", "sAMAccountName", "description", "distinguishedName",
+                 "member", "groupType", "whenCreated", "gidNumber", "managedBy"]
+        r = _ldbsearch(base, "subtree", attrs, "(objectClass=group)")
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        groups = []
+        for entry in _parse_ldb_output(r["stdout"]):
+            gt_raw = entry.get("groupType", "0") or "0"
+            try:
+                gt = int(gt_raw)
+                if gt < 0: gt = gt + 2**32
+            except (ValueError, TypeError):
+                gt = 0
+            entry["_scope"] = ("global" if gt & 0x2 else "domainlocal" if gt & 0x4
+                               else "universal" if gt & 0x8 else "unknown")
+            entry["_type"] = "security" if gt & 0x80000000 else "distribution"
+            groups.append(entry)
+        return {"groups": groups}
+
+    def get_group(self, groupname):
+        attrs = ["cn","sAMAccountName","description","distinguishedName",
+                 "member","groupType","whenCreated","gidNumber","managedBy"]
+        r = _ldbsearch(_ad_get_domain_dn(), "subtree", attrs, f"(sAMAccountName={groupname})")
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        entries = _parse_ldb_output(r["stdout"])
+        if not entries: return {"error": "Grupo não encontrado"}
+        return {"group": entries[0]}
+
+    def create_group(self, groupname, description="", group_type="Security",
+                     group_scope="Global", ou="", gid_number=None):
+        args = ["group", "create", groupname]
+        if group_type.lower() == "distribution": args.append("--group-type=Distribution")
+        if group_scope.lower() == "domainlocal":  args.append("--group-scope=DomainLocal")
+        elif group_scope.lower() == "universal":  args.append("--group-scope=Universal")
+        if description: args += ["--description", description]
+        if ou:          args += ["--groupou", ou]
+        if gid_number:  args += ["--gid-number", str(gid_number)]
+        r = _samba_tool(*args)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def delete_group(self, groupname):
+        r = _samba_tool("group", "delete", groupname)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def add_member(self, groupname, member):
+        r = _samba_tool("group", "addmembers", groupname, member)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def remove_member(self, groupname, member):
+        r = _samba_tool("group", "removemembers", groupname, member)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def list_members(self, groupname):
+        r = _samba_tool("group", "listmembers", groupname)
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        return {"members": [m.strip() for m in r["stdout"].splitlines() if m.strip()]}
+
+
+class _OUManager:
+
+    def list_ous(self):
+        r = _ldbsearch(_ad_get_domain_dn(), "subtree",
+                       ["ou","description","distinguishedName","whenCreated"],
+                       "(objectClass=organizationalUnit)")
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        return {"ous": _parse_ldb_output(r["stdout"])}
+
+    def create_ou(self, ou_name, parent_dn="", description=""):
+        if not parent_dn: parent_dn = _ad_get_domain_dn()
+        full_dn = f"OU={ou_name},{parent_dn}"
+        r = _samba_tool("ou", "create", full_dn)
+        if r["returncode"] != 0:
+            ldif = f"dn: {full_dn}\nobjectClass: organizationalUnit\nou: {ou_name}\n"
+            if description: ldif += f"description: {description}\n"
+            r2 = _ldbadd(ldif)
+            return {"ok": r2["returncode"] == 0, "output": r2["stdout"] + r2["stderr"]}
+        if description:
+            _ldbmodify(f"dn: {full_dn}\nchangetype: modify\nreplace: description\ndescription: {description}\n")
+        return {"ok": True, "output": r["stdout"]}
+
+    def delete_ou(self, ou_dn, recursive=False):
+        if recursive:
+            r = _ldbsearch(ou_dn, "one", ["distinguishedName", "objectClass"], None)
+            for entry in _parse_ldb_output(r["stdout"]):
+                _ldbdel(entry["dn"])
+        r = _samba_tool("ou", "delete", ou_dn)
+        if r["returncode"] != 0:
+            r = _ldbdel(ou_dn)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def rename_ou(self, ou_dn, new_name):
+        parent = ",".join(ou_dn.split(",")[1:])
+        new_dn = f"OU={new_name},{parent}"
+        r = _ad_run_cmd([os.path.join(SAMBA_BIN, "ldbrename"), "-H",
+                         os.path.join(SAMBA_PRIVATE, "sam.ldb"), ou_dn, new_dn])
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def get_ou_tree(self):
+        base = _ad_get_domain_dn()
+        r = _ldbsearch(base, "subtree",
+                       ["distinguishedName","ou","cn","objectClass","name"],
+                       "(|(objectClass=organizationalUnit)(objectClass=container)(objectClass=builtinDomain))")
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        entries = _parse_ldb_output(r["stdout"])
+
+        def get_type(entry):
+            oc = entry.get("objectClass", "")
+            oc_list = oc if isinstance(oc, list) else [oc]
+            if "organizationalUnit" in oc_list: return "ou"
+            if "builtinDomain" in oc_list: return "builtin"
+            return "container"
+
+        nodes = {}
+        for e in entries:
+            dn = e.get("dn", "")
+            name = e.get("ou") or e.get("cn") or e.get("name") or dn.split(",")[0].split("=")[-1]
+            if isinstance(name, list): name = name[0]
+            nodes[dn.lower()] = {"dn": dn, "name": name, "type": get_type(e), "children": []}
+
+        domain_node = {"dn": base, "name": _ad_get_realm() or base.split(",")[0].split("=")[-1],
+                       "type": "domain", "children": []}
+
+        def build_children(parent_dn):
+            children = []
+            for node in nodes.values():
+                dn = node["dn"]
+                if ",".join(dn.split(",")[1:]).lower() == parent_dn.lower():
+                    node["children"] = build_children(dn)
+                    children.append(node)
+            return sorted(children, key=lambda x: x["name"])
+
+        domain_node["children"] = build_children(base)
+        return {"tree": domain_node}
+
+    def get_ou_objects(self, ou_dn):
+        r = _ldbsearch(ou_dn, "one",
+                       ["distinguishedName","objectClass","cn","sAMAccountName",
+                        "description","name","userAccountControl","groupType"], None)
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        objects = []
+        for entry in _parse_ldb_output(r["stdout"]):
+            oc = entry.get("objectClass", "")
+            oc_list = oc if isinstance(oc, list) else [oc]
+            if "computer" in oc_list:               entry["_type"] = "computer"
+            elif "user" in oc_list and "person" in oc_list: entry["_type"] = "user"
+            elif "group" in oc_list:                entry["_type"] = "group"
+            elif "organizationalUnit" in oc_list:   entry["_type"] = "ou"
+            elif "container" in oc_list:            entry["_type"] = "container"
+            else:                                   entry["_type"] = "object"
+            objects.append(entry)
+        return {"objects": objects}
+
+
+class _GPOManager:
+
+    def list_gpos(self):
+        r = _samba_tool("gpo", "listall")
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        gpos, current = [], {}
+        for line in r["stdout"].splitlines():
+            if line.startswith("GPO") and ":" not in line:
+                if current: gpos.append(current)
+                current = {}
+            elif ":" in line:
+                key, _, value = line.partition(":")
+                current[key.strip()] = value.strip()
+        if current: gpos.append(current)
+        return {"gpos": gpos}
+
+    def get_gpo(self, gpo_guid):
+        r = _samba_tool("gpo", "show", gpo_guid)
+        info = {"guid": gpo_guid, "output": r["stdout"]}
+        realm = _ad_get_realm().lower()
+        tmpl_path = os.path.join(SYSVOL_PATH, realm, "Policies", gpo_guid,
+                                 "MACHINE", "Microsoft", "Windows NT", "SecEdit", "GptTmpl.inf")
+        if os.path.exists(tmpl_path):
+            try:
+                with open(tmpl_path, "r", encoding="utf-8", errors="replace") as f:
+                    info["gpt_tmpl"] = f.read()
+            except Exception:
+                pass
+        return {"gpo": info}
+
+    def create_gpo(self, display_name):
+        r = _samba_tool("gpo", "create", display_name)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def delete_gpo(self, gpo_guid):
+        r = _samba_tool("gpo", "del", gpo_guid)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def link_gpo(self, gpo_guid, container_dn):
+        r = _samba_tool("gpo", "setlink", container_dn, gpo_guid)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def unlink_gpo(self, gpo_guid, container_dn):
+        r = _samba_tool("gpo", "dellink", container_dn, gpo_guid)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def get_linked_gpos(self, container_dn):
+        r = _samba_tool("gpo", "getlink", container_dn)
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        return {"output": r["stdout"]}
+
+    def set_security_setting(self, gpo_guid, section, key, value):
+        realm = _ad_get_realm().lower()
+        tmpl_path = os.path.join(SYSVOL_PATH, realm, "Policies", gpo_guid,
+                                 "MACHINE", "Microsoft", "Windows NT", "SecEdit", "GptTmpl.inf")
+        gpt_path = os.path.join(SYSVOL_PATH, realm, "Policies", gpo_guid, "GPT.INI")
+        try:
+            cfg = configparser.ConfigParser()
+            if os.path.exists(tmpl_path): cfg.read(tmpl_path, encoding="utf-8")
+            if not cfg.has_section(section): cfg.add_section(section)
+            cfg.set(section, key, str(value))
+            os.makedirs(os.path.dirname(tmpl_path), exist_ok=True)
+            with open(tmpl_path, "w", encoding="utf-8") as f:
+                cfg.write(f)
+            ini = configparser.ConfigParser()
+            if os.path.exists(gpt_path): ini.read(gpt_path)
+            ver_str = ini.get("General", "Version", fallback="0") if ini.has_section("General") else "0"
+            ver = int(ver_str) if ver_str.isdigit() else 0
+            if not ini.has_section("General"): ini.add_section("General")
+            ini.set("General", "Version", str(ver + 1))
+            with open(gpt_path, "w") as f: ini.write(f)
+            return {"ok": True}
+        except Exception as e:
+            return {"error": str(e)}
+
+
+class _ShareManager:
+
+    def list_shares(self):
+        r = _ad_run_cmd([os.path.join(SAMBA_BIN, "smbclient"), "-L", "localhost", "-N", "--no-pass"])
+        shares, in_shares = [], False
+        for line in r["stdout"].splitlines():
+            line = line.strip()
+            if "Sharename" in line:
+                in_shares = True; continue
+            if in_shares:
+                if not line or line.startswith("-"): continue
+                if line.startswith("Server") or line.startswith("Workgroup"): break
+                parts = line.split(None, 2)
+                if len(parts) >= 2:
+                    shares.append({"name": parts[0], "type": parts[1] if len(parts) > 1 else "",
+                                   "comment": parts[2] if len(parts) > 2 else ""})
+        return {"shares": shares}
+
+    def get_acl(self, share, path="/"):
+        r = _ad_run_cmd([os.path.join(SAMBA_BIN, "smbcacls"), f"//localhost/{share}", path, "-N"])
+        return {"acl": r["stdout"], "error": r["stderr"] if r["returncode"] != 0 else ""}
+
+    def set_acl(self, share, path, acl_string, action="set"):
+        flag = {"set": "-S", "add": "-a", "delete": "-D", "modify": "-M"}.get(action.lower(), "-S")
+        r = _ad_run_cmd([os.path.join(SAMBA_BIN, "smbcacls"), f"//localhost/{share}", path,
+                         "-N", flag, acl_string])
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def create_share(self, name, path, comment="", read_only=False):
+        smb_conf = os.path.join(SAMBA_ETC, "smb.conf")
+        try:
+            with open(smb_conf, "a") as f:
+                f.write(f"\n[{name}]\n    path = {path}\n")
+                if comment: f.write(f"    comment = {comment}\n")
+                f.write(f"    read only = {'yes' if read_only else 'no'}\n")
+            _ad_run_cmd([os.path.join(SAMBA_BIN, "smbcontrol"), "smbd", "reload-config"])
+            return {"ok": True}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def browse_path(self, local_path):
+        try:
+            entries = []
+            for name in os.listdir(local_path):
+                full = os.path.join(local_path, name)
+                try:
+                    s = os.stat(full)
+                    entries.append({"name": name, "path": full, "is_dir": os.path.isdir(full),
+                                    "size": s.st_size, "modified": s.st_mtime,
+                                    "mode": oct(stat.S_IMODE(s.st_mode))})
+                except OSError:
+                    entries.append({"name": name, "path": full, "is_dir": False})
+            return {"entries": sorted(entries, key=lambda x: (not x["is_dir"], x["name"]))}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def set_posix_acl(self, path, owner="", group="", mode=""):
+        try:
+            if owner or group:
+                import pwd, grp as grpmod
+                uid = pwd.getpwnam(owner).pw_uid if owner else -1
+                gid = grpmod.getgrnam(group).gr_gid if group else -1
+                os.chown(path, uid, gid)
+            if mode:
+                os.chmod(path, int(mode, 8))
+            return {"ok": True}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def create_directory(self, path):
+        try:
+            os.makedirs(path, exist_ok=True)
+            return {"ok": True}
+        except Exception as e:
+            return {"error": str(e)}
+
+
+class _DNSManager:
+
+    def list_zones(self):
+        r = _samba_tool("dns", "zonelist", "localhost")
+        return {"output": r["stdout"], "error": r["stderr"] if r["returncode"] != 0 else ""}
+
+    def list_records(self, zone):
+        r = _samba_tool("dns", "query", "localhost", zone, "@", "ALL")
+        return {"output": r["stdout"], "error": r["stderr"] if r["returncode"] != 0 else ""}
+
+    def add_record(self, zone, name, record_type, data):
+        r = _samba_tool("dns", "add", "localhost", zone, name, record_type, data)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def delete_record(self, zone, name, record_type, data):
+        r = _samba_tool("dns", "delete", "localhost", zone, name, record_type, data)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+
+class _DomainInfo:
+
+    def get_info(self):
+        domain_dn = _ad_get_domain_dn()
+        realm     = _ad_get_realm()
+        level     = _samba_tool("domain", "level", "show")
+        procs     = _samba_tool("processes")
+        fsmo      = _samba_tool("fsmo", "show")
+        pwdpol    = _samba_tool("domain", "passwordsettings", "show")
+        return {
+            "domain_dn":       domain_dn,
+            "realm":           realm,
+            "domain_name":     _ad_get_domain_name(),
+            "hostname":        socket.gethostname(),
+            "level":           level["stdout"],
+            "processes":       procs["stdout"],
+            "fsmo":            fsmo["stdout"],
+            "password_policy": pwdpol["stdout"],
+        }
+
+    def get_computers(self):
+        attrs = ["cn","sAMAccountName","distinguishedName","operatingSystem",
+                 "operatingSystemVersion","lastLogon","description","dNSHostName"]
+        r = _ldbsearch(_ad_get_domain_dn(), "subtree", attrs, "(objectClass=computer)")
+        if r["returncode"] != 0: return {"error": r["stderr"]}
+        return {"computers": _parse_ldb_output(r["stdout"])}
 
 
 # ─── Virtual Console (TTY) ─────────────────────────────────────────────────────
@@ -241,331 +815,6 @@ class ShellSession:
         logger.info("Shell encerrado")
 
 
-# ─── Mapeamento de teclas (web → pynput) ───────────────────────────────────────
-
-def _build_key_map() -> dict:
-    if not HAS_INPUT:
-        return {}
-    return {
-        'Enter': _Key.enter, 'Return': _Key.enter,
-        'Escape': _Key.esc, 'Tab': _Key.tab,
-        'Backspace': _Key.backspace, 'Delete': _Key.delete,
-        'Insert': _Key.insert, 'Home': _Key.home, 'End': _Key.end,
-        'PageUp': _Key.page_up, 'PageDown': _Key.page_down,
-        'ArrowLeft': _Key.left, 'ArrowRight': _Key.right,
-        'ArrowUp': _Key.up, 'ArrowDown': _Key.down,
-        'F1':  _Key.f1,  'F2':  _Key.f2,  'F3':  _Key.f3,  'F4':  _Key.f4,
-        'F5':  _Key.f5,  'F6':  _Key.f6,  'F7':  _Key.f7,  'F8':  _Key.f8,
-        'F9':  _Key.f9,  'F10': _Key.f10, 'F11': _Key.f11, 'F12': _Key.f12,
-        'Control':      _Key.ctrl,    'ControlLeft': _Key.ctrl_l,  'ControlRight': _Key.ctrl_r,
-        'Shift':        _Key.shift,   'ShiftLeft':   _Key.shift_l, 'ShiftRight':   _Key.shift_r,
-        'Alt':          _Key.alt,     'AltLeft':     _Key.alt_l,   'AltRight':     _Key.alt_gr,
-        'Meta':         _Key.cmd,     'Super':       _Key.cmd,
-        'CapsLock':     _Key.caps_lock,
-        ' ':            _Key.space,   'Space':       _Key.space,
-    }
-
-_KEY_MAP = _build_key_map()
-
-
-# ─── Captura de tela ────────────────────────────────────────────────────────────
-
-def _find_display() -> str | None:
-    """Detecta o DISPLAY X11 ativo (necessário quando rodando como root/service)."""
-    if os.environ.get("DISPLAY"):
-        return os.environ["DISPLAY"]
-    # Tenta detectar a partir do processo Xorg
-    try:
-        import subprocess
-        out = subprocess.check_output(
-            ["pgrep", "-a", "Xorg"], text=True, timeout=2
-        )
-        for line in out.splitlines():
-            for part in line.split():
-                if part.startswith(":"):
-                    return part
-    except Exception:
-        pass
-    return ":0"
-
-
-class ScreenCapture:
-
-    def __init__(self):
-        self.quality = 50     # JPEG quality (10–95)
-        self.fps     = 15     # frames por segundo
-        self.monitor = 1      # 1-based (1 = primeiro monitor)
-        self._sct    = None
-
-    def _prepare(self):
-        display = _find_display()
-        if display:
-            os.environ.setdefault("DISPLAY", display)
-        # Tenta XAUTHORITY se não estiver definido
-        if not os.environ.get("XAUTHORITY"):
-            for path in (
-                f"/run/user/{os.getuid()}/Xauthority",
-                os.path.expanduser("~/.Xauthority"),
-                "/tmp/.Xauthority",
-            ):
-                if os.path.exists(path):
-                    os.environ["XAUTHORITY"] = path
-                    break
-        if not self._sct:
-            self._sct = _mss.mss()
-
-    def list_monitors(self) -> list:
-        try:
-            self._prepare()
-            return [
-                {"index": i, "width": m["width"], "height": m["height"]}
-                for i, m in enumerate(self._sct.monitors[1:], start=1)
-            ]
-        except Exception:
-            return []
-
-    def capture(self) -> str | None:
-        try:
-            self._prepare()
-            mons = self._sct.monitors
-            idx = self.monitor if 0 < self.monitor < len(mons) else 1
-            shot = self._sct.grab(mons[idx])
-            img = _PILImage.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-            buf = _io.BytesIO()
-            img.save(buf, "JPEG", quality=self.quality, optimize=False, subsampling=2)
-            return base64.b64encode(buf.getvalue()).decode()
-        except Exception as e:
-            logger.debug(f"Screen capture: {e}")
-            return None
-
-    def close(self):
-        if self._sct:
-            try:
-                self._sct.close()
-            except Exception:
-                pass
-            self._sct = None
-
-
-# ─── Controle de mouse e teclado ────────────────────────────────────────────────
-
-class InputController:
-
-    def __init__(self):
-        self._mouse = _MouseCtrl() if HAS_INPUT else None
-        self._kb    = _KbCtrl()    if HAS_INPUT else None
-
-    def mouse(self, action: str, x: int, y: int, dx: int = 0, dy: int = 0):
-        if not self._mouse:
-            return
-        try:
-            if action != 'scroll':
-                self._mouse.position = (x, y)
-            if action == 'left_down':
-                self._mouse.press(_MBtn.left)
-            elif action == 'left_up':
-                self._mouse.release(_MBtn.left)
-            elif action == 'right_down':
-                self._mouse.press(_MBtn.right)
-            elif action == 'right_up':
-                self._mouse.release(_MBtn.right)
-            elif action == 'middle_click':
-                self._mouse.click(_MBtn.middle)
-            elif action == 'left_dblclick':
-                self._mouse.click(_MBtn.left, 2)
-            elif action == 'scroll':
-                self._mouse.scroll(dx, dy)
-        except Exception as e:
-            logger.debug(f"Mouse: {e}")
-
-    def keyboard(self, action: str, key: str, code: str):
-        if not self._kb:
-            return
-        try:
-            pkey = _KEY_MAP.get(key)
-            if pkey is None and len(key) == 1:
-                pkey = _KeyCode.from_char(key)
-            if pkey is None:
-                return
-            if action == 'key_down':
-                self._kb.press(pkey)
-            elif action == 'key_up':
-                self._kb.release(pkey)
-        except Exception as e:
-            logger.debug(f"Keyboard: {e}")
-
-
-# ─── Headless Browser (Chromium via Playwright) ─────────────────────────────
-
-class HeadlessBrowser:
-    """Controla Chromium headless para renderizar páginas web remotamente."""
-
-    def __init__(self):
-        self.running = False
-        self._browser = None
-        self._page = None
-        self._pw = None
-        self._playwright = None
-        self.current_url = ""
-        self.width = 1280
-        self.height = 720
-
-    @staticmethod
-    async def _ensure_playwright():
-        """Instala playwright e Chromium se não estiverem disponíveis."""
-        import subprocess as _sp
-        loop = asyncio.get_running_loop()
-
-        try:
-            import playwright  # noqa
-        except ImportError:
-            logger.info("Playwright não encontrado — instalando via pip...")
-            await loop.run_in_executor(None, lambda: _sp.run(
-                [sys.executable, "-m", "pip", "install", "playwright", "-q"],
-                check=True
-            ))
-            logger.info("Playwright instalado.")
-
-        # Tenta importar; se o pacote acabou de ser instalado precisa reimportar
-        import importlib
-        try:
-            pw_mod = importlib.import_module("playwright.async_api")
-        except Exception as e:
-            raise RuntimeError(f"Falha ao importar playwright após instalação: {e}")
-
-        # Tenta lançar o Chromium para ver se o executável existe
-        try:
-            _pw = await pw_mod.async_playwright().__aenter__()
-            _br = await _pw.chromium.launch(headless=True)
-            await _br.close()
-            await _pw.__aexit__(None, None, None)
-        except Exception as e:
-            if "executable" in str(e).lower() or "not found" in str(e).lower() or "chromium" in str(e).lower():
-                logger.info("Chromium não instalado — baixando agora (~200MB)...")
-                await loop.run_in_executor(None, lambda: _sp.run(
-                    [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-                    check=True
-                ))
-                logger.info("Chromium instalado com sucesso.")
-            else:
-                raise
-
-    async def start(self, width: int = 1280, height: int = 720):
-        await self._ensure_playwright()
-        from playwright.async_api import async_playwright
-
-        self.width = width
-        self.height = height
-        self._playwright = async_playwright()
-        self._pw = await self._playwright.start()
-        self._browser = await self._pw.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-dev-shm-usage',
-                  '--disable-gpu', '--disable-software-rasterizer'],
-        )
-        self._page = await self._browser.new_page(
-            viewport={"width": width, "height": height}
-        )
-        self.running = True
-        logger.info(f"Headless browser iniciado ({width}x{height})")
-
-    async def navigate(self, url: str, timeout: int = 15000) -> dict:
-        if not self._page:
-            return {"error": "Browser não iniciado"}
-        try:
-            if not url.startswith(("http://", "https://")):
-                url = "http://" + url
-            self.current_url = url
-            response = await self._page.goto(url, timeout=timeout,
-                                              wait_until="domcontentloaded")
-            title = await self._page.title()
-            return {"url": self._page.url, "title": title,
-                    "status": response.status if response else 0}
-        except Exception as e:
-            return {"url": url, "error": str(e)}
-
-    async def screenshot(self, quality: int = 60) -> bytes:
-        if not self._page:
-            return b""
-        try:
-            return await self._page.screenshot(type="jpeg", quality=quality,
-                                                full_page=False)
-        except Exception:
-            return b""
-
-    async def click(self, x: int, y: int):
-        if self._page:
-            try:
-                await self._page.mouse.click(x, y)
-            except Exception:
-                pass
-
-    async def scroll(self, x: int, y: int, delta_x: int, delta_y: int):
-        if self._page:
-            try:
-                await self._page.mouse.move(x, y)
-                await self._page.mouse.wheel(delta_x, delta_y)
-            except Exception:
-                pass
-
-    async def type_text(self, text: str):
-        if self._page:
-            try:
-                await self._page.keyboard.type(text)
-            except Exception:
-                pass
-
-    async def press_key(self, key: str):
-        if self._page:
-            try:
-                await self._page.keyboard.press(key)
-            except Exception:
-                pass
-
-    async def resize(self, width: int, height: int):
-        if self._page:
-            self.width = width
-            self.height = height
-            try:
-                await self._page.set_viewport_size({"width": width, "height": height})
-            except Exception:
-                pass
-
-    async def go_back(self):
-        if self._page:
-            try:
-                await self._page.go_back(timeout=5000)
-            except Exception:
-                pass
-
-    async def go_forward(self):
-        if self._page:
-            try:
-                await self._page.go_forward(timeout=5000)
-            except Exception:
-                pass
-
-    async def reload(self):
-        if self._page:
-            try:
-                await self._page.reload(timeout=10000)
-            except Exception:
-                pass
-
-    async def stop(self):
-        self.running = False
-        for obj, method in [
-            (self._page, 'close'), (self._browser, 'close'), (self._pw, 'stop')
-        ]:
-            if obj:
-                try:
-                    await getattr(obj, method)()
-                except Exception:
-                    pass
-        self._page = self._browser = self._pw = self._playwright = None
-        logger.info("Headless browser encerrado")
-
-
 # ─── Agente ────────────────────────────────────────────────────────────────────
 
 class LinuxAgent:
@@ -583,17 +832,21 @@ class LinuxAgent:
         self.shell: ShellSession | None = None
         self._shell_reader_task: asyncio.Task | None = None
         self._running = True
-        self._uploads: dict = {}
+        self._uploads: dict = {}  # transfer_id -> {path, chunks[]}
         self.vconsole: VConsoleSession | None = None
         self._vconsole_task: asyncio.Task | None = None
-        self.screen      = ScreenCapture()    if HAS_SCREEN else None
-        self.input_ctrl  = InputController()  if HAS_INPUT  else None
-        self._screen_task: asyncio.Task | None = None
-        self._screen_active = False
-        self.browser = None
-        self._browser_stream_task: asyncio.Task | None = None
-        self._browser_fps = 5
-        self._browser_quality = 60
+
+        # Active Directory — habilitado automaticamente se Samba AD DC detectado
+        self.samba_available = _detect_samba()
+        if self.samba_available:
+            self._ad_users  = _UserManager()
+            self._ad_groups = _GroupManager()
+            self._ad_ous    = _OUManager()
+            self._ad_gpos   = _GPOManager()
+            self._ad_shares = _ShareManager()
+            self._ad_dns    = _DNSManager()
+            self._ad_domain = _DomainInfo()
+            logger.info("Samba AD DC detectado — módulo Active Directory habilitado")
 
     # ── Loop principal ─────────────────────────────────────────────────────────
 
@@ -604,8 +857,8 @@ class LinuxAgent:
                 async with websockets.connect(
                     self.relay_url,
                     max_size=10 * 1024 * 1024,
-                    ping_interval=10,
-                    ping_timeout=20,
+                    ping_interval=20,
+                    ping_timeout=60,
                 ) as ws:
                     self.ws = ws
                     logger.info("Conectado")
@@ -622,7 +875,6 @@ class LinuxAgent:
                 self.ws = None
                 self._stop_shell()
                 self._stop_vconsole()
-                self._stop_screen()
                 self.session_id = None
 
             if self._running:
@@ -633,15 +885,19 @@ class LinuxAgent:
 
     async def _register(self):
         info = get_system_info()
+        data = {
+            "agent_id":      self.agent_id,
+            "password_hash": self.password_hash,
+            "binding_token": self.binding_token,
+            "version":       AGENT_VERSION,
+            **info,
+        }
+        if self.samba_available:
+            data["ad_agent"]   = True
+            data["ad_version"] = AGENT_VERSION
         await self._send({
             "type": "register_agent",
-            "data": {
-                "agent_id":      self.agent_id,
-                "password_hash": self.password_hash,
-                "binding_token": self.binding_token,
-                "version":       AGENT_VERSION,
-                **info,
-            },
+            "data": data,
             "timestamp": time.time(),
         })
 
@@ -678,7 +934,6 @@ class LinuxAgent:
         elif t == "disconnect":
             logger.info("Viewer desconectou")
             self._stop_shell()
-            await self._handle_browser_stop()
             self.session_id = None
 
         elif t == "shell_start":
@@ -744,165 +999,21 @@ class LinuxAgent:
         elif t == "console_stop":
             self._stop_vconsole()
 
-        elif t == "screen_request":
-            if data.get("action", "start") == "start":
-                await self._start_screen()
+        elif t == "ad_request":
+            if self.samba_available:
+                asyncio.create_task(self._handle_ad_request(data, sid))
             else:
-                self._stop_screen()
-
-        elif t == "screen_config":
-            if self.screen:
-                if "quality" in data:
-                    self.screen.quality = max(10, min(95, int(data["quality"])))
-                if "fps" in data:
-                    self.screen.fps = max(1, min(30, int(data["fps"])))
-                if "monitor" in data:
-                    self.screen.monitor = max(1, int(data["monitor"]))
-
-        elif t == "mouse_event":
-            if self.input_ctrl:
-                self.input_ctrl.mouse(
-                    action=data.get("action", ""),
-                    x=int(data.get("x", 0)),
-                    y=int(data.get("y", 0)),
-                    dx=int(data.get("dx", 0)),
-                    dy=int(data.get("dy", 0)),
-                )
-
-        elif t == "keyboard_event":
-            if self.input_ctrl:
-                self.input_ctrl.keyboard(
-                    action=data.get("action", ""),
-                    key=data.get("key", ""),
-                    code=data.get("code", ""),
-                )
-
-        elif t == "browser_start":
-            await self._handle_browser_start(data)
-
-        elif t == "browser_navigate":
-            await self._handle_browser_navigate(data)
-
-        elif t == "browser_input":
-            await self._handle_browser_input(data)
-
-        elif t == "browser_scroll":
-            await self._handle_browser_scroll(data)
-
-        elif t == "browser_resize":
-            await self._handle_browser_resize(data)
-
-        elif t == "browser_stop":
-            await self._handle_browser_stop()
+                await self._send({"type": "ad_response",
+                                   "data": {"action": data.get("action"),
+                                            "request_id": data.get("request_id"),
+                                            "result": {"error": "Samba AD DC não encontrado nesta máquina"}},
+                                   "session_id": sid, "timestamp": time.time()})
 
         elif t == "update_agent":
             await self._handle_update(data)
 
         elif t == "pong":
             pass  # heartbeat ok
-
-    # ── Web Browser (Headless) ──────────────────────────────────────────────────
-
-    async def _handle_browser_start(self, data: dict):
-        await self._handle_browser_stop()
-        width = data.get("width", 1280)
-        height = data.get("height", 720)
-        self._browser_fps = data.get("fps", 5)
-        self._browser_quality = data.get("quality", 60)
-        self.browser = HeadlessBrowser()
-        try:
-            await self.browser.start(width, height)
-            await self._send({
-                "type": "browser_status",
-                "data": {"status": "started", "mode": "headless",
-                         "width": width, "height": height},
-                "session_id": self.session_id, "timestamp": time.time(),
-            })
-            self._browser_stream_task = asyncio.create_task(self._browser_stream_loop())
-        except Exception as e:
-            logger.error(f"Erro iniciando browser: {e}")
-            await self._send({
-                "type": "browser_status",
-                "data": {"status": "error", "error": str(e)},
-                "session_id": self.session_id, "timestamp": time.time(),
-            })
-            self.browser = None
-
-    async def _handle_browser_navigate(self, data: dict):
-        if not self.browser or not self.browser.running:
-            return
-        url = data.get("url", "")
-        action = data.get("action", "goto")
-        if action == "back":
-            await self.browser.go_back()
-        elif action == "forward":
-            await self.browser.go_forward()
-        elif action == "reload":
-            await self.browser.reload()
-        elif url:
-            result = await self.browser.navigate(url)
-            await self._send({
-                "type": "browser_status",
-                "data": {"status": "navigated", **result},
-                "session_id": self.session_id, "timestamp": time.time(),
-            })
-
-    async def _handle_browser_input(self, data: dict):
-        if not self.browser or not self.browser.running:
-            return
-        action = data.get("action", "")
-        if action == "click":
-            await self.browser.click(data.get("x", 0), data.get("y", 0))
-        elif action == "type":
-            await self.browser.type_text(data.get("text", ""))
-        elif action == "key":
-            await self.browser.press_key(data.get("key", ""))
-
-    async def _handle_browser_scroll(self, data: dict):
-        if not self.browser or not self.browser.running:
-            return
-        await self.browser.scroll(data.get("x", 0), data.get("y", 0),
-                                   data.get("dx", 0), data.get("dy", 0))
-
-    async def _handle_browser_resize(self, data: dict):
-        if not self.browser or not self.browser.running:
-            return
-        self._browser_fps = data.get("fps", self._browser_fps)
-        self._browser_quality = data.get("quality", self._browser_quality)
-        await self.browser.resize(data.get("width", 1280), data.get("height", 720))
-
-    async def _handle_browser_stop(self):
-        if self._browser_stream_task:
-            self._browser_stream_task.cancel()
-            try:
-                await self._browser_stream_task
-            except asyncio.CancelledError:
-                pass
-            self._browser_stream_task = None
-        if self.browser:
-            await self.browser.stop()
-            self.browser = None
-
-    async def _browser_stream_loop(self):
-        prev_frame = None
-        while self.browser and self.browser.running:
-            try:
-                frame_bytes = await self.browser.screenshot(quality=self._browser_quality)
-                if frame_bytes and frame_bytes != prev_frame:
-                    frame_b64 = base64.b64encode(frame_bytes).decode('ascii')
-                    await self._send({
-                        "type": "browser_frame",
-                        "data": {"frame": frame_b64, "url": self.browser.current_url,
-                                 "width": self.browser.width, "height": self.browser.height},
-                        "session_id": self.session_id, "timestamp": time.time(),
-                    })
-                    prev_frame = frame_bytes
-                await asyncio.sleep(1.0 / self._browser_fps)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Erro browser stream: {e}")
-                await asyncio.sleep(1)
 
     # ── Auto-atualização ────────────────────────────────────────────────────────
 
@@ -1072,53 +1183,8 @@ class LinuxAgent:
             info["uptime"] = (f"{days}d " if days else "") + f"{hours:02d}:{mins:02d}"
         except Exception:
             pass
-        # Monitores disponíveis
-        if self.screen:
-            monitors = self.screen.list_monitors()
-            if monitors:
-                info["monitors"]      = monitors
-                info["monitor_count"] = len(monitors)
         await self._send({"type": "system_info", "data": info,
                            "session_id": self.session_id, "timestamp": time.time()})
-
-    # ── Captura de tela ─────────────────────────────────────────────────────────
-
-    async def _start_screen(self):
-        if not self.screen:
-            await self._send({
-                "type": "error",
-                "data": {"message": "Captura de tela indisponível. Instale: pip install mss pillow"},
-                "session_id": self.session_id, "timestamp": time.time(),
-            })
-            return
-        self._screen_active = True
-        if not self._screen_task or self._screen_task.done():
-            self._screen_task = asyncio.create_task(self._screen_loop())
-
-    def _stop_screen(self):
-        self._screen_active = False
-        if self._screen_task:
-            self._screen_task.cancel()
-            self._screen_task = None
-
-    async def _screen_loop(self):
-        loop = asyncio.get_running_loop()
-        while self._screen_active and self.ws:
-            t0 = time.monotonic()
-            frame = await loop.run_in_executor(None, self.screen.capture)
-            if frame:
-                await self._send({
-                    "type": "screen_frame",
-                    "data": {"frame": frame},
-                    "session_id": self.session_id,
-                    "timestamp": time.time(),
-                })
-            elapsed  = time.monotonic() - t0
-            interval = 1.0 / max(1, self.screen.fps)
-            sleep    = max(0.0, interval - elapsed)
-            if sleep:
-                await asyncio.sleep(sleep)
-        logger.info("Screen loop finalizado")
 
     # ── Virtual Console ─────────────────────────────────────────────────────────
 
@@ -1193,6 +1259,91 @@ class LinuxAgent:
         if self.shell:
             self.shell.stop()
             self.shell = None
+
+    # ── Active Directory ────────────────────────────────────────────────────────
+
+    async def _handle_ad_request(self, data: dict, session_id):
+        action     = data.get("action")
+        params     = data.get("params", {})
+        request_id = data.get("request_id")
+        logger.info(f"AD request: {action}")
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(None, self._dispatch_ad_action, action, params)
+        except Exception as e:
+            logger.exception(f"Erro no dispatch AD: {action}")
+            result = {"error": str(e)}
+        await self._send({"type": "ad_response",
+                           "data": {"action": action, "request_id": request_id, "result": result},
+                           "session_id": session_id, "timestamp": time.time()})
+
+    def _dispatch_ad_action(self, action, params):
+        dispatch = {
+            "domain_info":         lambda p: self._ad_domain.get_info(),
+            "domain_computers":    lambda p: self._ad_domain.get_computers(),
+            "user_list":           lambda p: self._ad_users.list_users(p.get("ou")),
+            "user_get":            lambda p: self._ad_users.get_user(p["username"]),
+            "user_create":         lambda p: self._ad_users.create_user(
+                                       p["username"], p["password"],
+                                       p.get("given_name",""), p.get("surname",""),
+                                       p.get("mail",""), p.get("ou",""),
+                                       p.get("must_change_password", False), p.get("unix_attrs")),
+            "user_modify":         lambda p: self._ad_users.modify_user(p["username"], p["attrs"]),
+            "user_delete":         lambda p: self._ad_users.delete_user(p["username"]),
+            "user_enable":         lambda p: self._ad_users.enable_user(p["username"]),
+            "user_disable":        lambda p: self._ad_users.disable_user(p["username"]),
+            "user_reset_password": lambda p: self._ad_users.reset_password(
+                                       p["username"], p["new_password"], p.get("must_change", False)),
+            "user_unlock":         lambda p: self._ad_users.unlock_user(p["username"]),
+            "user_move":           lambda p: self._ad_users.move_user(p["username"], p["target_ou"]),
+            "user_groups":         lambda p: self._ad_users.get_user_groups(p["username"]),
+            "group_list":          lambda p: self._ad_groups.list_groups(p.get("ou")),
+            "group_get":           lambda p: self._ad_groups.get_group(p["groupname"]),
+            "group_create":        lambda p: self._ad_groups.create_group(
+                                       p["groupname"], p.get("description",""),
+                                       p.get("group_type","Security"), p.get("group_scope","Global"),
+                                       p.get("ou",""), p.get("gid_number")),
+            "group_delete":        lambda p: self._ad_groups.delete_group(p["groupname"]),
+            "group_add_member":    lambda p: self._ad_groups.add_member(p["groupname"], p["member"]),
+            "group_remove_member": lambda p: self._ad_groups.remove_member(p["groupname"], p["member"]),
+            "group_members":       lambda p: self._ad_groups.list_members(p["groupname"]),
+            "ou_list":             lambda p: self._ad_ous.list_ous(),
+            "ou_tree":             lambda p: self._ad_ous.get_ou_tree(),
+            "ou_objects":          lambda p: self._ad_ous.get_ou_objects(p["ou_dn"]),
+            "ou_create":           lambda p: self._ad_ous.create_ou(
+                                       p["ou_name"], p.get("parent_dn",""), p.get("description","")),
+            "ou_delete":           lambda p: self._ad_ous.delete_ou(p["ou_dn"], p.get("recursive", False)),
+            "ou_rename":           lambda p: self._ad_ous.rename_ou(p["ou_dn"], p["new_name"]),
+            "gpo_list":            lambda p: self._ad_gpos.list_gpos(),
+            "gpo_get":             lambda p: self._ad_gpos.get_gpo(p["gpo_guid"]),
+            "gpo_create":          lambda p: self._ad_gpos.create_gpo(p["display_name"]),
+            "gpo_delete":          lambda p: self._ad_gpos.delete_gpo(p["gpo_guid"]),
+            "gpo_link":            lambda p: self._ad_gpos.link_gpo(p["gpo_guid"], p["container_dn"]),
+            "gpo_unlink":          lambda p: self._ad_gpos.unlink_gpo(p["gpo_guid"], p["container_dn"]),
+            "gpo_linked":          lambda p: self._ad_gpos.get_linked_gpos(p["container_dn"]),
+            "gpo_set_security":    lambda p: self._ad_gpos.set_security_setting(
+                                       p["gpo_guid"], p["section"], p["key"], p["value"]),
+            "share_list":          lambda p: self._ad_shares.list_shares(),
+            "share_create":        lambda p: self._ad_shares.create_share(
+                                       p["name"], p["path"], p.get("comment",""), p.get("read_only", False)),
+            "share_acl":           lambda p: self._ad_shares.get_acl(p["share"], p.get("path","/")),
+            "share_set_acl":       lambda p: self._ad_shares.set_acl(
+                                       p["share"], p.get("path","/"), p["acl_string"], p.get("action","set")),
+            "share_browse":        lambda p: self._ad_shares.browse_path(p["local_path"]),
+            "share_set_posix":     lambda p: self._ad_shares.set_posix_acl(
+                                       p["path"], p.get("owner",""), p.get("group",""), p.get("mode","")),
+            "share_mkdir":         lambda p: self._ad_shares.create_directory(p["path"]),
+            "dns_zones":           lambda p: self._ad_dns.list_zones(),
+            "dns_records":         lambda p: self._ad_dns.list_records(p["zone"]),
+            "dns_add":             lambda p: self._ad_dns.add_record(
+                                       p["zone"], p["name"], p["record_type"], p["data"]),
+            "dns_delete":          lambda p: self._ad_dns.delete_record(
+                                       p["zone"], p["name"], p["record_type"], p["data"]),
+        }
+        fn = dispatch.get(action)
+        if fn is None:
+            return {"error": f"Ação desconhecida: {action}"}
+        return fn(params)
 
     # ── Envio ──────────────────────────────────────────────────────────────────
 
