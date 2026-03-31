@@ -22,7 +22,7 @@ import sys
 import time
 import argparse
 
-AGENT_VERSION = "1.0.0"
+AGENT_VERSION = "1.0.1"
 
 try:
     import websockets
