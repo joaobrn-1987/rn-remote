@@ -800,6 +800,13 @@ class ADAgent:
     def _hash_password(self, pw):
         return hashlib.sha256(pw.encode()).hexdigest()
 
+    def _compute_binding_token(self):
+        """Prova que esta máquina é a dona do agent_id (igual ao agente Linux)."""
+        secret = self.config.get("binding_secret", "")
+        if not secret:
+            return ""
+        return hashlib.sha256(f"{secret}{self.agent_id}".encode()).hexdigest()
+
     async def run(self):
         while self._running:
             try:
@@ -823,6 +830,7 @@ class ADAgent:
             reg_data = {
                 "agent_id":      self.agent_id,
                 "password_hash": self._hash_password(self.password) if self.password else "",
+                "binding_token": self._compute_binding_token(),
                 "hostname":      socket.gethostname(),
                 "os_type":       "Samba AD DC",
                 "os_version":    "CentOS 9",

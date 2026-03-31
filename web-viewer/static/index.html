@@ -1157,17 +1157,24 @@ function handleMessage(msg) {
             browserStarted = false;
             browserMode = null;
             browserPendingUrl = null;
+            // Reset estado AD ao trocar de máquina
+            if (typeof adReset === 'function') adReset();
             showMain();
-            sendMessage('screen_request', { action: 'start' }, sessionId);
-            sendMessage('system_info_request', {}, sessionId);
-            // Mostra/oculta tab Active Directory conforme tipo do agente
+            // Detecta se é agente AD e ajusta a UI
             setTimeout(() => {
                 const agentInfo = allAgents.find(a => a.agent_id === currentAgentId);
+                const isAD = !!(agentInfo && agentInfo.ad_agent);
                 const tabAD = document.getElementById('tabAD');
-                if (tabAD) {
-                    tabAD.classList.toggle('visible', !!(agentInfo && agentInfo.ad_agent));
+                if (tabAD) tabAD.classList.toggle('visible', isAD);
+                if (isAD) {
+                    // Para agentes AD: abre direto no painel AD
+                    switchTab('ad');
+                } else {
+                    // Para agentes normais: inicia tela + sysinfo
+                    sendMessage('screen_request', { action: 'start' }, sessionId);
+                    sendMessage('system_info_request', {}, sessionId);
                 }
-            }, 500);
+            }, 300);
             break;
 
         case 'connect_reject':
@@ -1804,11 +1811,13 @@ function renderCards(agents) {
 
     let html = '';
     for (const a of sorted) {
-        const osIcon = a.os_type === 'Windows' ? '🖥️' : a.os_type === 'Darwin' ? '🍎' : '🐧';
+        const isAD   = !!(a.ad_agent);
+        const osIcon = isAD ? '🏘️' : (a.os_type === 'Windows' ? '🖥️' : a.os_type === 'Darwin' ? '🍎' : '🐧');
         const name   = escapeHtml(a.nickname || a.hostname || a.agent_id);
         const online = a.is_online;
         const badge  = online
-            ? '<span class="mc-badge badge-on">● Online</span>'
+            ? (isAD ? '<span class="mc-badge" style="background:rgba(139,92,246,.15);color:#a78bfa">● AD</span>'
+                    : '<span class="mc-badge badge-on">● Online</span>')
             : '<span class="mc-badge badge-off">Offline</span>';
         const btnEdit = `<button class="btn-edit-mc" onclick="openEdit('${a.agent_id}','${name.replace(/'/g,"\\'")}')">&#9998; Editar</button>`;
         const agentVer = a.version || '';
@@ -1954,6 +1963,10 @@ function showLogin() {
     document.getElementById('xtermContainer').innerHTML   = '';
     document.getElementById('vconsoleContainer').innerHTML = '';
     currentPath = '';
+    // Oculta tab AD e reseta estado
+    const tabAD = document.getElementById('tabAD');
+    if (tabAD) tabAD.classList.remove('visible');
+    if (typeof adReset === 'function') adReset();
 }
 
 function showMain() {
@@ -2536,6 +2549,33 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
         if (entry._timeout) clearTimeout(entry._timeout);
         delete AD.pendingRequests[reqId];
         if (typeof entry === 'function') entry(data.result);
+    };
+
+    // ─── Reset (chamado ao trocar de máquina) ───
+
+    window.adReset = function() {
+        AD.initialized   = false;
+        AD.selectedNode  = null;
+        AD.selectedObjects = [];
+        AD.allObjects    = [];
+        AD.domainInfo    = null;
+        AD.editingUser   = null;
+        AD.editingGroup  = null;
+        AD.contextIdx    = -1;
+        // Cancela requests pendentes
+        Object.values(AD.pendingRequests).forEach(fn => {
+            if (fn && fn._timeout) clearTimeout(fn._timeout);
+        });
+        AD.pendingRequests = {};
+        // Limpa UI
+        const tree = document.getElementById('adTree');
+        if (tree) tree.innerHTML = '<div class="ad-loading">&#9203; Aguardando conexão...</div>';
+        const list = document.getElementById('adListContainer');
+        if (list) list.innerHTML = '<div class="ad-empty">Selecione um container na árvore</div>';
+        document.getElementById('adStatusDot').classList.remove('on');
+        document.getElementById('adStatusText').textContent = 'Não conectado';
+        document.getElementById('adStatusDomain').textContent = '';
+        document.getElementById('adBreadcrumb').textContent = 'Active Directory';
     };
 
     // ─── Inicialização ───
