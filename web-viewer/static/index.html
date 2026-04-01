@@ -410,6 +410,31 @@
         .ad-empty { padding:40px 20px; text-align:center; color:var(--text-dim); font-size:13px; }
         .ad-output-pre { background:var(--bg-input); border:1px solid var(--border); border-radius:7px; padding:12px; font-family:monospace; font-size:12px; color:var(--text-dim); white-space:pre-wrap; word-break:break-all; max-height:320px; overflow-y:auto; }
 
+        /* ── Share Browser ── */
+        .ad-share-browser { display:flex; height:100%; overflow:hidden; }
+        .ad-share-tree { width:240px; border-right:1px solid var(--border); overflow-y:auto; background:var(--bg-secondary); flex-shrink:0; }
+        .ad-share-tree-item { display:flex; align-items:center; gap:6px; padding:5px 10px; font-size:12px; cursor:pointer; user-select:none; border-radius:3px; margin:1px 4px; }
+        .ad-share-tree-item:hover { background:rgba(59,130,246,.1); }
+        .ad-share-tree-item.active { background:var(--accent); color:#fff; }
+        .ad-share-content { flex:1; overflow-y:auto; }
+        .ad-file-row { display:flex; align-items:center; padding:4px 8px; font-size:12px; cursor:pointer; border-bottom:1px solid var(--border-subtle, rgba(0,0,0,.05)); }
+        .ad-file-row:hover { background:rgba(59,130,246,.07); }
+        .ad-file-row.selected { background:rgba(59,130,246,.15); }
+        /* ACL UI */
+        .acl-principal-item { display:flex; align-items:center; gap:6px; padding:6px 8px; font-size:12px; cursor:pointer; border-bottom:1px solid var(--border-subtle, rgba(0,0,0,.05)); }
+        .acl-principal-item:hover { background:rgba(59,130,246,.08); }
+        .acl-principal-item.selected { background:var(--accent); color:#fff; }
+        .acl-perms-grid { display:grid; grid-template-columns:1fr 60px 60px; font-size:12px; }
+        .acl-perms-grid-header { font-weight:600; color:var(--text-dim); padding:4px 2px; font-size:11px; text-align:center; }
+        .acl-perms-grid-row { padding:3px 2px; border-bottom:1px solid var(--border-subtle, rgba(0,0,0,.04)); display:contents; }
+        .acl-perms-grid-row > * { padding:3px 2px; }
+        .acl-perms-grid input[type=checkbox] { margin:auto; display:block; }
+        .ad-ace-row { display:grid; grid-template-columns:60px 160px 1fr 1fr; font-size:11px; padding:4px 6px; border-bottom:1px solid var(--border-subtle, rgba(0,0,0,.04)); cursor:pointer; }
+        .ad-ace-row:hover { background:rgba(59,130,246,.08); }
+        .ad-ace-row.selected { background:rgba(59,130,246,.15); }
+        .ad-ace-type-allow { color:var(--success, #2e7d32); font-weight:600; }
+        .ad-ace-type-deny  { color:var(--danger); font-weight:600; }
+        .share-settings-section { font-weight:600; font-size:12px; color:var(--accent); text-transform:uppercase; letter-spacing:.5px; margin:14px 0 6px; padding-bottom:4px; border-bottom:1px solid var(--border); }
     </style>
 </head>
 <body>
@@ -1220,6 +1245,200 @@
       <button class="ad-btn-primary" onclick="adCreateWMIFilter()">Criar</button>
     </div>
   </div>
+</div>
+
+<!-- ── Modal Propriedades de Caminho ─────────────────── -->
+<div class="ad-modal-overlay" id="adPathPropsModal">
+  <div class="ad-modal" style="max-width:580px;width:97%">
+    <div class="ad-modal-header">
+      <span class="ad-modal-title" id="adPathProps-title">Propriedades</span>
+      <button class="ad-modal-close" onclick="adCloseModal('adPathPropsModal')">&#10005;</button>
+    </div>
+    <div class="ad-modal-tabs" id="adPathPropsTabs">
+      <div class="ad-modal-tab active" onclick="adPathPropsTab('general')">Geral</div>
+      <div class="ad-modal-tab" id="adPathPropsTabSharing" onclick="adPathPropsTab('sharing')">Compartilhamento</div>
+      <div class="ad-modal-tab" onclick="adPathPropsTab('security')">Segurança</div>
+    </div>
+    <div class="ad-modal-body" style="min-height:300px">
+      <div id="adPathPropsPanel-general"></div>
+      <div id="adPathPropsPanel-sharing" style="display:none"></div>
+      <div id="adPathPropsPanel-security" style="display:none">
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Nome do objeto: <span id="adSecPath-name" style="color:var(--text)"></span></div>
+        <div style="display:flex;gap:8px;margin-bottom:6px">
+          <div style="flex:1">
+            <div style="font-size:12px;font-weight:600;margin-bottom:4px">Grupos ou usuários:</div>
+            <div id="adAclPrincipalList" style="border:1px solid var(--border);border-radius:3px;min-height:100px;max-height:140px;overflow-y:auto;background:var(--bg-alt)"></div>
+            <div style="display:flex;gap:6px;margin-top:6px">
+              <button class="ad-btn-secondary ad-btn-sm" onclick="adAddAclPrincipalDialog()">Adicionar...</button>
+              <button class="ad-btn-secondary ad-btn-sm" onclick="adRemoveAclPrincipal()">Remover</button>
+            </div>
+          </div>
+        </div>
+        <div id="adAclPermissionsGrid" style="border:1px solid var(--border);border-radius:3px;padding:8px;background:var(--bg-alt);min-height:140px"></div>
+        <div style="margin-top:8px;text-align:right">
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adOpenAdvancedSecurity()">Avançado...</button>
+        </div>
+      </div>
+    </div>
+    <div class="ad-modal-footer">
+      <button class="ad-btn-secondary" onclick="adCloseModal('adPathPropsModal')">Cancelar</button>
+      <button class="ad-btn-primary" onclick="adSavePathProps()">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal Segurança Avançada ───────────────────────── -->
+<div class="ad-modal-overlay" id="adAdvancedSecurityModal">
+  <div class="ad-modal" style="max-width:720px;width:97%">
+    <div class="ad-modal-header">
+      <span class="ad-modal-title" id="adAdvSec-title">Configurações Avançadas de Segurança</span>
+      <button class="ad-modal-close" onclick="adCloseModal('adAdvancedSecurityModal')">&#10005;</button>
+    </div>
+    <div class="ad-modal-tabs" id="adAdvSecTabs">
+      <div class="ad-modal-tab active" onclick="adAdvSecTab('perms')">Permissões</div>
+      <div class="ad-modal-tab" onclick="adAdvSecTab('owner')">Proprietário</div>
+      <div class="ad-modal-tab" onclick="adAdvSecTab('effective')">Perm. Efetivas</div>
+    </div>
+    <div class="ad-modal-body" style="min-height:320px">
+      <div id="adAdvSecPanel-perms">
+        <div id="adAdvAceTable" style="overflow-y:auto;max-height:220px;border:1px solid var(--border);border-radius:3px;margin-bottom:8px"></div>
+        <div style="display:flex;gap:6px;margin-bottom:8px">
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adAddAce()">Adicionar</button>
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adEditAce()">Editar</button>
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adRemoveAce()">Remover</button>
+        </div>
+        <div style="font-size:12px">
+          <label class="ad-field-check" style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+            <input type="checkbox" id="adAdvSec-inherit" onchange="adToggleInheritance(this.checked)">
+            <span>Incluir permissões herdáveis do contêiner pai</span>
+          </label>
+          <label class="ad-field-check" style="display:flex;align-items:center;gap:6px">
+            <input type="checkbox" id="adAdvSec-replaceChildren" onchange="adReplaceChildPerms(this.checked)">
+            <span>Substituir permissões de todos os objetos filho</span>
+          </label>
+        </div>
+      </div>
+      <div id="adAdvSecPanel-owner" style="display:none">
+        <div style="margin-bottom:12px">
+          <div style="font-size:12px;color:var(--text-dim);margin-bottom:4px">Proprietário atual:</div>
+          <div id="adAdvSec-currentOwner" style="font-size:13px;font-weight:600;padding:8px;background:var(--bg-alt);border:1px solid var(--border);border-radius:3px"></div>
+        </div>
+        <div class="ad-field"><label>Novo proprietário</label>
+          <div style="display:flex;gap:6px">
+            <input type="text" id="adAdvSec-newOwner" style="flex:1" placeholder="Nome do usuário ou grupo">
+            <button class="ad-btn-secondary ad-btn-sm" onclick="adOpenSelectPrincipal(v => document.getElementById('adAdvSec-newOwner').value = v)">...</button>
+          </div>
+        </div>
+        <label class="ad-field-check" style="display:flex;align-items:center;gap:6px;margin-bottom:12px">
+          <input type="checkbox" id="adAdvSec-ownerRecursive">
+          <span>Substituir proprietário em subcontêineres e objetos</span>
+        </label>
+        <div style="text-align:right">
+          <button class="ad-btn-primary ad-btn-sm" onclick="adSaveOwner()">Aplicar</button>
+        </div>
+      </div>
+      <div id="adAdvSecPanel-effective" style="display:none">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+          <input type="text" id="adAdvSec-effectiveUser" style="flex:1" placeholder="Nome do usuário ou grupo">
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adOpenSelectPrincipal(v => document.getElementById('adAdvSec-effectiveUser').value = v)">...</button>
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adLoadEffectivePerms()">Ver</button>
+        </div>
+        <div id="adAdvSec-effectiveList"></div>
+      </div>
+    </div>
+    <div class="ad-modal-footer">
+      <button class="ad-btn-secondary" onclick="adCloseModal('adAdvancedSecurityModal')">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal Editar ACE ───────────────────────────────── -->
+<div class="ad-modal-overlay" id="adEditAceModal">
+  <div class="ad-modal" style="max-width:500px;width:97%">
+    <div class="ad-modal-header">
+      <span class="ad-modal-title" id="adEditAce-title">Entrada de Permissão</span>
+      <button class="ad-modal-close" onclick="adCloseModal('adEditAceModal')">&#10005;</button>
+    </div>
+    <div class="ad-modal-body">
+      <div class="ad-field"><label>Principal</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="adAce-principal" style="flex:1" placeholder="Usuário ou grupo">
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adOpenSelectPrincipal(v => document.getElementById('adAce-principal').value = v)">Alterar...</button>
+        </div>
+      </div>
+      <div class="ad-field"><label>Tipo</label>
+        <div style="display:flex;gap:16px;margin-top:4px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="radio" name="adAce-type" value="allow" checked> Permitir</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="radio" name="adAce-type" value="deny"> Negar</label>
+        </div>
+      </div>
+      <div class="ad-field"><label>Aplica-se a</label>
+        <select id="adAce-appliesTo">
+          <option value="this_folder_subfolders_files">Esta pasta, subpastas e arquivos</option>
+          <option value="this_folder_only">Somente esta pasta</option>
+          <option value="this_folder_subfolders">Esta pasta e subpastas</option>
+          <option value="this_folder_files">Esta pasta e arquivos</option>
+          <option value="subfolders_files_only">Somente subpastas e arquivos</option>
+          <option value="subfolders_only">Somente subpastas</option>
+          <option value="files_only">Somente arquivos</option>
+        </select>
+      </div>
+      <div style="font-size:12px;font-weight:600;margin-bottom:6px">Permissões:</div>
+      <div id="adAce-permsGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:2px 12px;font-size:12px"></div>
+    </div>
+    <div class="ad-modal-footer">
+      <button class="ad-btn-secondary" onclick="adCloseModal('adEditAceModal')">Cancelar</button>
+      <button class="ad-btn-primary" onclick="adSaveAce()">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal Configuração do Compartilhamento ─────────── -->
+<div class="ad-modal-overlay" id="adShareSettingsModal">
+  <div class="ad-modal" style="max-width:620px;width:97%">
+    <div class="ad-modal-header">
+      <span class="ad-modal-title" id="adShareSettings-title">Configuração do Compartilhamento</span>
+      <button class="ad-modal-close" onclick="adCloseModal('adShareSettingsModal')">&#10005;</button>
+    </div>
+    <div class="ad-modal-body" id="adShareSettings-body" style="max-height:70vh;overflow-y:auto"></div>
+    <div class="ad-modal-footer">
+      <button class="ad-btn-danger ad-btn-sm" onclick="adDeleteShareConfirm()" style="margin-right:auto">&#128465; Excluir</button>
+      <button class="ad-btn-secondary" onclick="adCloseModal('adShareSettingsModal')">Cancelar</button>
+      <button class="ad-btn-primary" onclick="adSaveShareSettings()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal Selecionar Principal ────────────────────── -->
+<div class="ad-modal-overlay" id="adSelectPrincipalModal">
+  <div class="ad-modal" style="max-width:460px;width:95%">
+    <div class="ad-modal-header">
+      <span class="ad-modal-title">Selecionar Usuário ou Grupo</span>
+      <button class="ad-modal-close" onclick="adCloseModal('adSelectPrincipalModal')">&#10005;</button>
+    </div>
+    <div class="ad-modal-body">
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        <input type="text" id="adSelPrincipal-search" style="flex:1" placeholder="Pesquisar..." onkeydown="if(event.key==='Enter')adSearchPrincipals()">
+        <button class="ad-btn-secondary ad-btn-sm" onclick="adSearchPrincipals()">Pesquisar</button>
+      </div>
+      <div id="adSelPrincipal-list" style="border:1px solid var(--border);border-radius:3px;min-height:160px;max-height:240px;overflow-y:auto;background:var(--bg-alt)"></div>
+    </div>
+    <div class="ad-modal-footer">
+      <button class="ad-btn-secondary" onclick="adCloseModal('adSelectPrincipalModal')">Cancelar</button>
+      <button class="ad-btn-primary" onclick="adConfirmSelectPrincipal()">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Context Menu Arquivo/Pasta ────────────────────── -->
+<div class="ad-context-menu" id="adPathContextMenu" style="min-width:180px">
+  <div class="ad-ctx-item" onclick="adPathCtxAction('properties')">&#9881; Propriedades</div>
+  <div class="ad-ctx-item" onclick="adPathCtxAction('security')">&#128274; Permissões</div>
+  <div class="ad-ctx-sep"></div>
+  <div class="ad-ctx-item" onclick="adPathCtxAction('newfolder')">&#128193; Nova Pasta</div>
+  <div class="ad-ctx-item" onclick="adPathCtxAction('rename')">&#9998; Renomear</div>
+  <div class="ad-ctx-sep"></div>
+  <div class="ad-ctx-item" onclick="adPathCtxAction('delete')" style="color:var(--danger)">&#128465; Excluir</div>
 </div>
 
 <!-- ── Modal Criar Compartilhamento ──────────────────── -->
@@ -2828,9 +3047,9 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
             const el = document.getElementById('adMenu' + v.charAt(0).toUpperCase() + v.slice(1));
             if (el) el.classList.toggle('active', v === view);
         });
-        if (view === 'users')  { adLoadTree(); }
+        if (view === 'users')       { adLoadTree(); }
         else if (view === 'gpo')    { adLoadGPOs(); }
-        else if (view === 'shares') { adLoadShares(); }
+        else if (view === 'shares') { adLoadSharesBrowser(); }
         else if (view === 'dns')    { adLoadDNS(); }
         else if (view === 'domain') { adLoadDomainInfo(); }
     };
@@ -2840,7 +3059,7 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
             if (AD.selectedNode) adLoadObjects(AD.selectedNode);
             else adLoadTree();
         } else if (AD.currentView === 'gpo') adLoadGPOs();
-        else if (AD.currentView === 'shares') adLoadShares();
+        else if (AD.currentView === 'shares') adLoadSharesBrowser();
         else if (AD.currentView === 'dns') adLoadDNS();
         else if (AD.currentView === 'domain') adLoadDomainInfo();
     };
@@ -4596,6 +4815,806 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
             document.getElementById('adListContainer').innerHTML = html;
         });
     }
+
+    // ─── Share Browser ────────────────────────────────────────────────────────
+
+    function adLoadSharesBrowser() {
+        document.getElementById('adDetailTitle').textContent = 'Compartilhamentos';
+        document.getElementById('adDetailCount').textContent = '';
+        const container = document.getElementById('adListContainer');
+        container.innerHTML =
+            '<div class="ad-share-browser">' +
+              '<div class="ad-share-tree" id="adShareTree"><div class="ad-loading">&#9203; Carregando...</div></div>' +
+              '<div class="ad-share-content" id="adShareContent" oncontextmenu="adPathCtxMenu(event)"><div class="ad-empty" style="margin-top:40px">Selecione um compartilhamento</div></div>' +
+            '</div>';
+        adSendRequest('share_list', {}, (r) => {
+            const shares = (r && r.shares) || [];
+            document.getElementById('adDetailCount').textContent = shares.length + ' share(s)';
+            adRenderShareTree(shares);
+        });
+    }
+
+    function adRenderShareTree(shares) {
+        const el = document.getElementById('adShareTree');
+        if (!el) return;
+        AD.shares = shares;
+        let html = '<div style="padding:8px 6px 4px;font-size:11px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px">Compartilhamentos</div>';
+        shares.forEach(s => {
+            const sn = s.name.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+            html += '<div class="ad-share-tree-item" id="adShareNode-' + adXmlEsc(s.name) + '" onclick="adBrowseShare(\'' + sn + '\')" oncontextmenu="adShareCtxMenu(event,\'' + sn + '\')">' +
+                '&#128193; <span>' + escapeHtml(s.name) + '</span></div>';
+        });
+        if (!shares.length) html += '<div class="ad-empty" style="padding:16px">Nenhum share</div>';
+        el.innerHTML = html;
+    }
+
+    function adBrowseShare(shareName) {
+        const share = AD.shares && AD.shares.find(s => s.name === shareName);
+        const path  = share && share.path ? share.path : '';
+        // Highlight node
+        document.querySelectorAll('.ad-share-tree-item').forEach(el => el.classList.remove('active'));
+        const node = document.getElementById('adShareNode-' + shareName);
+        if (node) node.classList.add('active');
+        AD.currentShareName = shareName;
+        AD.currentSharePath = path;
+        if (path) {
+            adBrowseSharePath(path, shareName);
+        } else {
+            document.getElementById('adShareContent').innerHTML =
+                '<div class="ad-empty" style="margin-top:40px">Caminho do share não configurado</div>';
+        }
+    }
+
+    function adBrowseSharePath(localPath, shareName) {
+        const el = document.getElementById('adShareContent');
+        el.innerHTML = '<div class="ad-loading">&#9203; Carregando...</div>';
+        AD.currentBrowsePath = localPath;
+        adSendRequest('path_browse_full', { local_path: localPath }, (r) => {
+            if (r && r.error) { el.innerHTML = '<div class="ad-empty">' + escapeHtml(r.error) + '</div>'; return; }
+            adRenderPathContents(r.entries || [], localPath, shareName);
+        });
+    }
+
+    function adRenderPathContents(entries, currentPath, shareName) {
+        const el = document.getElementById('adShareContent');
+        const root = AD.currentSharePath;
+        const isRoot = currentPath === root;
+        let html = '<div style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--border);background:var(--bg-secondary)">';
+        if (!isRoot) {
+            const parent = currentPath.substring(0, currentPath.lastIndexOf('/')) || root;
+            html += '<button class="ad-btn-secondary ad-btn-sm" onclick="adBrowseSharePath(\'' + adXmlEsc(parent).replace(/'/g,"\\'") + '\',\'' + adXmlEsc(shareName||'').replace(/'/g,"\\'") + '\')">&#8592; Voltar</button>';
+        }
+        html += '<button class="ad-btn-secondary ad-btn-sm" onclick="adNewFolderDialog(\'' + adXmlEsc(currentPath).replace(/'/g,"\\'") + '\')">+ Pasta</button>';
+        html += '<span style="font-size:11px;color:var(--text-dim);margin-left:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">' + escapeHtml(currentPath) + '</span></div>';
+
+        html += '<table class="ad-list-table" style="font-size:12px"><thead><tr>' +
+            '<th>Nome</th><th style="width:80px">Tipo</th><th style="width:90px">Tamanho</th>' +
+            '<th style="width:130px">Modificado</th><th style="width:70px">Dono</th><th style="width:60px">Modo</th></tr></thead><tbody>';
+
+        entries.forEach(e => {
+            const pathJs = e.path.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+            const type   = e.is_dir ? 'Pasta' : 'Arquivo';
+            const size   = e.is_dir ? '—' : adFmtBytes(e.size || 0);
+            const mod    = e.modified ? new Date(e.modified*1000).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'}) : '—';
+            const icon   = e.is_dir ? '&#128193;' : '&#128196;';
+            const dblclick = e.is_dir ? 'adBrowseSharePath(\'' + pathJs + '\',\'' + adXmlEsc(shareName||'').replace(/'/g,"\\'") + '\')' : '';
+            html += '<tr class="ad-file-row" onclick="adSelectFile(this,\'' + pathJs + '\')" ' +
+                (dblclick ? 'ondblclick="' + dblclick + '"' : '') +
+                ' oncontextmenu="adPathCtxMenu(event,\'' + pathJs + '\',\'' + (e.is_dir?'dir':'file') + '\')">' +
+                '<td>' + icon + ' <span>' + escapeHtml(e.name) + '</span></td>' +
+                '<td style="color:var(--text-dim)">' + type + '</td>' +
+                '<td style="color:var(--text-dim)">' + size + '</td>' +
+                '<td style="color:var(--text-dim)">' + mod + '</td>' +
+                '<td style="color:var(--text-dim)">' + escapeHtml(e.owner||'') + '</td>' +
+                '<td style="font-family:monospace;font-size:11px;color:var(--text-dim)">' + escapeHtml(e.mode||'') + '</td></tr>';
+        });
+        if (!entries.length) html += '<tr><td colspan="6"><div class="ad-empty">Pasta vazia</div></td></tr>';
+        el.innerHTML = html + '</tbody></table>';
+    }
+
+    function adFmtBytes(b) {
+        if (b >= 1e9) return (b/1e9).toFixed(1) + ' GB';
+        if (b >= 1e6) return (b/1e6).toFixed(1) + ' MB';
+        if (b >= 1e3) return (b/1e3).toFixed(1) + ' KB';
+        return b + ' B';
+    }
+
+    window.adSelectFile = function(row, path) {
+        document.querySelectorAll('.ad-file-row').forEach(r => r.classList.remove('selected'));
+        row.classList.add('selected');
+        AD.selectedFilePath = path;
+    };
+
+    // ─── Context Menus ────────────────────────────────────────────────────────
+
+    window.adPathCtxMenu = function(e, path, kind) {
+        e.preventDefault(); e.stopPropagation();
+        if (!path) { path = AD.selectedFilePath || ''; }
+        AD.ctxPath = path; AD.ctxKind = kind || 'dir';
+        const m = document.getElementById('adPathContextMenu');
+        m.style.left = e.clientX + 'px'; m.style.top = e.clientY + 'px';
+        m.classList.add('visible');
+        const cleanup = () => { m.classList.remove('visible'); document.removeEventListener('click', cleanup); };
+        setTimeout(() => document.addEventListener('click', cleanup), 10);
+    };
+
+    window.adShareCtxMenu = function(e, shareName) {
+        e.preventDefault(); e.stopPropagation();
+        AD.ctxShareName = shareName;
+        // Reuse path context for now, show share-specific items
+        const m = document.getElementById('adPathContextMenu');
+        // Swap items temporarily for share context
+        m.innerHTML =
+            '<div class="ad-ctx-item" onclick="adOpenShareSettings(\'' + shareName.replace(/'/g,"\\'") + '\')">&#9881; Configurações do Share</div>' +
+            '<div class="ad-ctx-item" onclick="adPathCtxAction(\'security\')">&#128274; Permissões</div>' +
+            '<div class="ad-ctx-sep"></div>' +
+            '<div class="ad-ctx-item" onclick="adShareRenameDialog(\'' + shareName.replace(/'/g,"\\'") + '\')" >&#9998; Renomear</div>' +
+            '<div class="ad-ctx-item" onclick="adDeleteShareConfirmFor(\'' + shareName.replace(/'/g,"\\'") + '\')" style="color:var(--danger)">&#128465; Excluir</div>';
+        m.style.left = e.clientX + 'px'; m.style.top = e.clientY + 'px';
+        m.classList.add('visible');
+        const cleanup = () => {
+            m.classList.remove('visible');
+            // Restore default items
+            m.innerHTML =
+                '<div class="ad-ctx-item" onclick="adPathCtxAction(\'properties\')">&#9881; Propriedades</div>' +
+                '<div class="ad-ctx-item" onclick="adPathCtxAction(\'security\')">&#128274; Permissões</div>' +
+                '<div class="ad-ctx-sep"></div>' +
+                '<div class="ad-ctx-item" onclick="adPathCtxAction(\'newfolder\')">&#128193; Nova Pasta</div>' +
+                '<div class="ad-ctx-item" onclick="adPathCtxAction(\'rename\')">&#9998; Renomear</div>' +
+                '<div class="ad-ctx-sep"></div>' +
+                '<div class="ad-ctx-item" onclick="adPathCtxAction(\'delete\')" style="color:var(--danger)">&#128465; Excluir</div>';
+            document.removeEventListener('click', cleanup);
+        };
+        setTimeout(() => document.addEventListener('click', cleanup), 10);
+    };
+
+    window.adPathCtxAction = function(action) {
+        const path = AD.ctxPath || AD.selectedFilePath || '';
+        if (action === 'properties') { adOpenPathProperties(path, false); }
+        else if (action === 'security') { adOpenPathProperties(path, true); }
+        else if (action === 'newfolder') { adNewFolderDialog(path); }
+        else if (action === 'rename') { adRenamePathDialog(path); }
+        else if (action === 'delete') { adDeletePathConfirm(path); }
+    };
+
+    // ─── Propriedades de Caminho ──────────────────────────────────────────────
+
+    function adOpenPathProperties(path, goToSecurity) {
+        if (!path) return;
+        AD.propsPath = path;
+        AD.propsAcl  = null;
+        AD.selectedAce = null;
+        document.getElementById('adPathProps-title').textContent = path.split('/').pop() || path;
+        document.getElementById('adSecPath-name').textContent     = path;
+        // Show/hide sharing tab based on whether this is a share root
+        const isShareRoot = AD.shares && AD.shares.some(s => s.path === path);
+        document.getElementById('adPathPropsTabSharing').style.display = isShareRoot ? '' : 'none';
+        // Switch panels
+        const panels = ['general','sharing','security'];
+        panels.forEach(p => {
+            document.getElementById('adPathPropsPanel-' + p).style.display = 'none';
+        });
+        document.querySelectorAll('#adPathPropsTabs .ad-modal-tab').forEach((t,i) => t.classList.toggle('active', panels[i] === (goToSecurity ? 'security' : 'general')));
+        document.getElementById('adPathPropsPanel-' + (goToSecurity ? 'security' : 'general')).style.display = '';
+        showModal('adPathPropsModal');
+        adPathPropsTab(goToSecurity ? 'security' : 'general');
+    }
+
+    window.adPathPropsTab = function(tab) {
+        ['general','sharing','security'].forEach(p => {
+            document.getElementById('adPathPropsPanel-' + p).style.display = p === tab ? '' : 'none';
+        });
+        const panels = ['general','sharing','security'];
+        document.querySelectorAll('#adPathPropsTabs .ad-modal-tab').forEach((t,i) => t.classList.toggle('active', panels[i] === tab));
+        const path = AD.propsPath;
+        if (!path) return;
+        if (tab === 'general' && !AD.propsInfo) {
+            adSendRequest('path_info', { local_path: path }, (r) => {
+                AD.propsInfo = r && r.info;
+                adPathPropsTabGeneral(r && r.info);
+            });
+        }
+        if (tab === 'sharing') { adPathPropsTabSharing(path); }
+        if (tab === 'security') {
+            if (!AD.propsAcl) {
+                document.getElementById('adAclPrincipalList').innerHTML = '<div class="ad-loading">&#9203; Carregando...</div>';
+                adSendRequest('ntfs_get_acl', { local_path: path }, (r) => {
+                    if (r && r.acl) { AD.propsAcl = r.acl; adLoadNtfsAcl(r.acl); }
+                    else document.getElementById('adAclPrincipalList').innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text-dim)">' + escapeHtml((r && r.error) || 'Sem ACL') + '</div>';
+                });
+            }
+        }
+    };
+
+    function adPathPropsTabGeneral(info) {
+        const el = document.getElementById('adPathPropsPanel-general');
+        if (!info) { el.innerHTML = '<div class="ad-loading">&#9203; Carregando...</div>'; return; }
+        const fmt = (ts) => ts ? new Date(ts*1000).toLocaleString('pt-BR') : '—';
+        const fmtSize = (b) => b !== undefined ? adFmtBytes(b) + ' (' + b.toLocaleString() + ' bytes)' : '—';
+        let html = '';
+        const field = (label, val) => '<div class="ad-field"><label>' + label + '</label><div style="font-size:12px;padding:4px 0;color:var(--text)">' + escapeHtml(String(val||'—')) + '</div></div>';
+        html += field('Nome', info.name);
+        html += field('Localização', info.path);
+        html += field('Tipo', info.is_dir ? 'Pasta de arquivos' : 'Arquivo');
+        html += field('Tamanho', fmtSize(info.size));
+        if (info.is_dir) {
+            html += field('Conteúdo', (info.file_count||0) + ' arquivo(s), ' + (info.folder_count||0) + ' pasta(s)');
+            if (info.disk_total) {
+                html += field('Disco', adFmtBytes(info.disk_used||0) + ' usados de ' + adFmtBytes(info.disk_total));
+            }
+        }
+        html += field('Criado em', fmt(info.created));
+        html += field('Modificado em', fmt(info.modified));
+        html += field('Acessado em', fmt(info.accessed));
+        html += field('Dono', info.owner);
+        html += field('Grupo', info.group);
+        html += '<div class="ad-field"><label>Modo (POSIX)</label><div style="display:flex;gap:8px;align-items:center"><input type="text" id="adProps-mode" value="' + adXmlEsc(info.mode||'') + '" style="width:80px;font-family:monospace"></div></div>';
+        el.innerHTML = html;
+    }
+
+    function adPathPropsTabSharing(path) {
+        const share = AD.shares && AD.shares.find(s => s.path === path);
+        const el    = document.getElementById('adPathPropsPanel-sharing');
+        if (!share) { el.innerHTML = '<div class="ad-empty">Não é raiz de compartilhamento</div>'; return; }
+        el.innerHTML = '<div class="ad-loading">&#9203; Carregando...</div>';
+        adSendRequest('share_get_permissions', { share_name: share.name }, (r) => {
+            const perms = (r && r.permissions) || {};
+            const realm = _adGetRealm ? _adGetRealm() : '';
+            let uncPath = '\\\\' + (AD.domainInfo && AD.domainInfo.hostname || 'SERVIDOR') + '\\' + share.name;
+            let html = '<div class="ad-field"><label>Nome do compartilhamento</label><input type="text" id="adShare-shareName" value="' + adXmlEsc(share.name) + '" readonly style="background:var(--bg-alt)"></div>' +
+                '<div class="ad-field"><label>Caminho UNC</label><input type="text" value="' + adXmlEsc(uncPath) + '" readonly style="background:var(--bg-alt)"></div>' +
+                '<div class="ad-field"><label>Comentário</label><input type="text" id="adShare-comment" value="' + adXmlEsc(share.comment||'') + '"></div>' +
+                '<div style="margin-top:10px"><label class="ad-field-check" style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="adShare-guestOk" ' + (perms['guest ok']==='yes'?'checked':'') + '> <span>Acesso de convidados</span></label>' +
+                '<label class="ad-field-check" style="display:flex;align-items:center;gap:8px;margin-top:4px"><input type="checkbox" id="adShare-readOnly" ' + (perms['read only']==='yes'?'checked':'') + '> <span>Somente leitura</span></label></div>' +
+                '<div style="margin-top:12px;text-align:right">' +
+                '<button class="ad-btn-secondary ad-btn-sm" onclick="adOpenShareSettings(\'' + adXmlEsc(share.name).replace(/'/g,"\\'") + '\')">Configurações Avançadas...</button></div>';
+            el.innerHTML = html;
+            AD.propsShareName = share.name;
+        });
+    }
+
+    window.adSavePathProps = function() {
+        const path = AD.propsPath;
+        if (!path) return;
+        // Save POSIX mode if changed
+        const modeEl = document.getElementById('adProps-mode');
+        if (modeEl && modeEl.value) {
+            adSendRequest('share_set_posix', { path, mode: modeEl.value }, () => {});
+        }
+        adCloseModal('adPathPropsModal');
+    };
+
+    window.adNewFolderDialog = function(parentPath) {
+        const name = prompt('Nome da nova pasta:');
+        if (!name) return;
+        const fullPath = (parentPath || AD.currentBrowsePath || '') + '/' + name;
+        adSendRequest('share_mkdir', { path: fullPath }, (r) => {
+            if (r && r.ok) adBrowseSharePath(parentPath || AD.currentBrowsePath, AD.currentShareName);
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    window.adRenamePathDialog = function(path) {
+        const p = path || AD.selectedFilePath || AD.ctxPath;
+        if (!p) return;
+        const oldName = p.split('/').pop();
+        const newName = prompt('Novo nome:', oldName);
+        if (!newName || newName === oldName) return;
+        adSendRequest('path_rename', { local_path: p, new_name: newName }, (r) => {
+            if (r && r.ok) adBrowseSharePath(AD.currentBrowsePath, AD.currentShareName);
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    window.adDeletePathConfirm = function(path) {
+        const p = path || AD.selectedFilePath || AD.ctxPath;
+        if (!p) return;
+        const name = p.split('/').pop();
+        if (!confirm('Excluir "' + name + '"?\nEsta ação não pode ser desfeita.')) return;
+        adSendRequest('path_delete', { local_path: p, recursive: true }, (r) => {
+            if (r && r.ok) adBrowseSharePath(AD.currentBrowsePath, AD.currentShareName);
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    // ─── NTFS ACL ─────────────────────────────────────────────────────────────
+
+    function adLoadNtfsAcl(acl) {
+        AD.propsAcl = acl;
+        adRenderAclPrincipals(acl);
+        AD.selectedAclSid = null;
+        document.getElementById('adAclPermissionsGrid').innerHTML =
+            '<div style="font-size:12px;color:var(--text-dim);padding:4px">Selecione um usuário/grupo acima</div>';
+    }
+
+    function adRenderAclPrincipals(acl) {
+        const el = document.getElementById('adAclPrincipalList');
+        const dacl = acl && acl.dacl || [];
+        // Collect unique principals
+        const seen = new Set(); const principals = [];
+        dacl.forEach(a => {
+            if (!seen.has(a.sid)) { seen.add(a.sid); principals.push({ sid: a.sid, name: a._display_principal }); }
+        });
+        if (!principals.length) { el.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text-dim)">Nenhuma ACE</div>'; return; }
+        el.innerHTML = principals.map(p =>
+            '<div class="acl-principal-item" onclick="adSelectAclPrincipal(\'' + adXmlEsc(p.sid).replace(/'/g,"\\'") + '\')">' +
+            '&#128100; <span>' + escapeHtml(p.name) + '</span></div>'
+        ).join('');
+    }
+
+    window.adSelectAclPrincipal = function(sid) {
+        AD.selectedAclSid = sid;
+        document.querySelectorAll('.acl-principal-item').forEach(el => {
+            const match = el.textContent.trim() === (AD.propsAcl.dacl.find(a => a.sid === sid) || {})._display_principal;
+            el.classList.toggle('selected', match);
+        });
+        adRenderBasicPermissions(sid);
+    };
+
+    function adRenderBasicPermissions(sid) {
+        const el   = document.getElementById('adAclPermissionsGrid');
+        const dacl = AD.propsAcl && AD.propsAcl.dacl || [];
+        const allow_mask = dacl.filter(a => a.sid === sid && a.type === 'A').reduce((m, a) => m | a.mask, 0);
+        const deny_mask  = dacl.filter(a => a.sid === sid && a.type === 'D').reduce((m, a) => m | a.mask, 0);
+        const BASIC = [
+            {name:'Full Control',          mask:0x1F01FF},
+            {name:'Modify',                mask:0x1301BF},
+            {name:'Read & Execute',        mask:0x1200A9},
+            {name:'List Folder Contents',  mask:0x1200A9},
+            {name:'Read',                  mask:0x120089},
+            {name:'Write',                 mask:0x120116},
+        ];
+        const name = (dacl.find(a => a.sid === sid) || {})._display_principal || sid;
+        let html = '<div style="font-size:12px;font-weight:600;margin-bottom:6px">Permissões para: <span style="color:var(--accent)">' + escapeHtml(name) + '</span></div>' +
+            '<div class="acl-perms-grid">' +
+            '<div></div><div class="acl-perms-grid-header">Permitir</div><div class="acl-perms-grid-header">Negar</div>';
+        BASIC.forEach(b => {
+            const allowed = (allow_mask & b.mask) === b.mask;
+            const denied  = (deny_mask  & b.mask) === b.mask;
+            html += '<div style="padding:3px 0">' + escapeHtml(b.name) + '</div>' +
+                '<div style="text-align:center"><input type="checkbox" ' + (allowed ? 'checked' : '') + ' onchange="adToggleBasicPerm(\'' + adXmlEsc(sid).replace(/'/g,"\\'") + '\',' + b.mask + ',\'allow\',this.checked)"></div>' +
+                '<div style="text-align:center"><input type="checkbox" ' + (denied ? 'checked' : '') + ' onchange="adToggleBasicPerm(\'' + adXmlEsc(sid).replace(/'/g,"\\'") + '\',' + b.mask + ',\'deny\',this.checked)"></div>';
+        });
+        el.innerHTML = html + '</div>';
+    }
+
+    window.adToggleBasicPerm = function(sid, mask, type, checked) {
+        const path = AD.propsPath;
+        if (!path) return;
+        if (checked) {
+            adSendRequest('ntfs_add_ace', { local_path: path, ace_type: type, principal: sid, permissions: [hex_to_perms(mask)] }, (r) => {
+                if (!r || !r.ok) alert('Erro: ' + ((r && r.error) || (r && r.output) || 'falha'));
+                else { AD.propsAcl = null; adPathPropsTab('security'); }
+            });
+        } else {
+            const dacl = AD.propsAcl && AD.propsAcl.dacl || [];
+            const ace  = dacl.find(a => a.sid === sid && a.type === (type === 'allow' ? 'A' : 'D') && (a.mask & mask) === mask);
+            if (!ace) return;
+            adSendRequest('ntfs_remove_ace', { local_path: path, ace_index: ace.index }, (r) => {
+                if (!r || !r.ok) alert('Erro: ' + ((r && r.error) || 'falha'));
+                else { AD.propsAcl = null; adPathPropsTab('security'); }
+            });
+        }
+    };
+
+    function hex_to_perms(mask) {
+        const PERM_BITS = [[0x1F01FF,'Full Control'],[0x1301BF,'Modify'],[0x1200A9,'Read & Execute'],[0x120116,'Write'],[0x120089,'Read']];
+        for (const [m,n] of PERM_BITS) if ((mask & m) === m) return n;
+        return hex(mask);
+    }
+
+    window.adAddAclPrincipalDialog = function() {
+        adOpenSelectPrincipal((principal) => {
+            const path = AD.propsPath;
+            if (!path || !principal) return;
+            adSendRequest('ntfs_add_ace', { local_path: path, ace_type: 'allow', principal, permissions: ['Read & Execute'] }, (r) => {
+                if (r && r.ok) { AD.propsAcl = null; adPathPropsTab('security'); }
+                else alert('Erro: ' + ((r && r.error) || (r && r.output) || 'falha'));
+            });
+        });
+    };
+
+    window.adRemoveAclPrincipal = function() {
+        const sid = AD.selectedAclSid;
+        const path = AD.propsPath;
+        if (!sid || !path) return;
+        if (!confirm('Remover todas as entradas de permissão para este principal?')) return;
+        const dacl = AD.propsAcl && AD.propsAcl.dacl || [];
+        const indices = dacl.filter(a => a.sid === sid).map(a => a.index).sort((a,b) => b-a);
+        let pending = indices.length;
+        if (!pending) return;
+        indices.forEach(idx => {
+            adSendRequest('ntfs_remove_ace', { local_path: path, ace_index: idx }, () => {
+                if (--pending === 0) { AD.propsAcl = null; adPathPropsTab('security'); }
+            });
+        });
+    };
+
+    // ─── Segurança Avançada ───────────────────────────────────────────────────
+
+    window.adOpenAdvancedSecurity = function() {
+        const path = AD.propsPath;
+        if (!path) return;
+        AD.advSecPath = path;
+        AD.selectedAdvAce = null;
+        document.getElementById('adAdvSec-title').textContent = 'Segurança Avançada: ' + path.split('/').pop();
+        adAdvSecTab('perms');
+        showModal('adAdvancedSecurityModal');
+        adRenderAdvancedAces();
+    };
+
+    window.adAdvSecTab = function(tab) {
+        ['perms','owner','effective'].forEach(p => {
+            document.getElementById('adAdvSecPanel-' + p).style.display = p === tab ? '' : 'none';
+        });
+        document.querySelectorAll('#adAdvSecTabs .ad-modal-tab').forEach((t,i) => {
+            t.classList.toggle('active', ['perms','owner','effective'][i] === tab);
+        });
+        if (tab === 'owner') adLoadOwner();
+    };
+
+    function adRenderAdvancedAces() {
+        const el   = document.getElementById('adAdvAceTable');
+        const acl  = AD.propsAcl;
+        if (!acl) {
+            el.innerHTML = '<div class="ad-loading">&#9203; Carregando...</div>';
+            adSendRequest('ntfs_get_acl', { local_path: AD.advSecPath }, (r) => {
+                if (r && r.acl) { AD.propsAcl = r.acl; adRenderAdvancedAces(); }
+                else el.innerHTML = '<div class="ad-empty">' + escapeHtml((r && r.error) || 'Sem ACL') + '</div>';
+            });
+            return;
+        }
+        const dacl = acl.dacl || [];
+        let html = '<div style="display:grid;grid-template-columns:60px 160px 1fr 1fr;font-size:11px;font-weight:600;color:var(--text-dim);padding:4px 6px;border-bottom:1px solid var(--border)">' +
+            '<div>Tipo</div><div>Principal</div><div>Acesso</div><div>Aplica-se a</div></div>';
+        dacl.forEach((a, i) => {
+            const typeClass = a.type === 'A' ? 'ad-ace-type-allow' : 'ad-ace-type-deny';
+            html += '<div class="ad-ace-row" onclick="adSelectAdvAce(' + a.index + ')" ondblclick="adEditAce(' + a.index + ')">' +
+                '<div class="' + typeClass + '">' + (a.type === 'A' ? 'Permitir' : 'Negar') + '</div>' +
+                '<div>' + escapeHtml(a._display_principal || a.sid) + '</div>' +
+                '<div>' + escapeHtml((a._display_permissions || []).join(', ')) + '</div>' +
+                '<div style="color:var(--text-dim)">' + escapeHtml(a._display_applies_to || '') + (a._display_inherited ? ' (Herdado)' : '') + '</div></div>';
+        });
+        if (!dacl.length) html += '<div class="ad-empty" style="padding:12px">Sem ACEs</div>';
+        el.innerHTML = html;
+        // Inheritance flag
+        const inh = document.getElementById('adAdvSec-inherit');
+        if (inh) inh.checked = !(acl.dacl_flags || '').includes('P');
+    }
+
+    window.adSelectAdvAce = function(index) {
+        AD.selectedAdvAce = index;
+        document.querySelectorAll('.ad-ace-row').forEach((el, i) => {
+            const dacl = AD.propsAcl && AD.propsAcl.dacl || [];
+            el.classList.toggle('selected', dacl[i] && dacl[i].index === index);
+        });
+    };
+
+    window.adAddAce = function() {
+        adOpenAceEditor(null);
+    };
+
+    window.adEditAce = function(index) {
+        const dacl = AD.propsAcl && AD.propsAcl.dacl || [];
+        const ace  = index !== undefined ? dacl.find(a => a.index === index) : dacl.find(a => a.index === AD.selectedAdvAce);
+        if (!ace) { adOpenAceEditor(null); return; }
+        adOpenAceEditor(ace);
+    };
+
+    function adOpenAceEditor(ace) {
+        AD._aceEdit = ace;
+        document.getElementById('adEditAce-title').textContent = ace ? 'Editar Entrada de Permissão' : 'Nova Entrada de Permissão';
+        document.getElementById('adAce-principal').value = ace ? (ace._display_principal || ace.sid) : '';
+        const radios = document.querySelectorAll('[name="adAce-type"]');
+        radios.forEach(r => r.checked = ace ? (r.value === (ace.type === 'A' ? 'allow' : 'deny')) : r.value === 'allow');
+        const appTo = document.getElementById('adAce-appliesTo');
+        if (appTo && ace) appTo.value = ace._display_applies_to || 'this_folder_subfolders_files';
+        // Build granular grid
+        const GRANULAR = [
+            [0x00020,'Traverse Folder / Execute File'], [0x00001,'List Folder / Read Data'],
+            [0x00080,'Read Attributes'],                [0x00008,'Read Extended Attributes'],
+            [0x00002,'Create Files / Write Data'],      [0x00004,'Create Folders / Append Data'],
+            [0x00100,'Write Attributes'],               [0x00010,'Write Extended Attributes'],
+            [0x00040,'Delete Subfolders and Files'],    [0x10000,'Delete'],
+            [0x20000,'Read Permissions'],               [0x40000,'Change Permissions'],
+            [0x80000,'Take Ownership'],
+        ];
+        const mask = ace ? ace.mask : 0;
+        let html = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+            '<label style="font-size:12px;font-weight:600">Full Control</label>' +
+            '<input type="checkbox" id="adAce-fullControl" onchange="adAceToggleFull(this.checked)"></div>';
+        GRANULAR.forEach(([bit, name]) => {
+            html += '<label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:3px">' +
+                '<input type="checkbox" class="adAce-bit" data-bit="' + bit + '" ' + (mask & bit ? 'checked' : '') + '>' +
+                escapeHtml(name) + '</label>';
+        });
+        document.getElementById('adAce-permsGrid').innerHTML = html;
+        // Full control check
+        const fc = document.getElementById('adAce-fullControl');
+        if (fc) fc.checked = GRANULAR.every(([bit]) => mask & bit);
+        showModal('adEditAceModal');
+    }
+
+    window.adAceToggleFull = function(checked) {
+        document.querySelectorAll('.adAce-bit').forEach(cb => cb.checked = checked);
+    };
+
+    window.adSaveAce = function() {
+        const path = AD.advSecPath;
+        if (!path) return;
+        const principal = document.getElementById('adAce-principal').value.trim();
+        if (!principal) { alert('Informe o principal.'); return; }
+        const typeVal   = document.querySelector('[name="adAce-type"]:checked');
+        const aceType   = typeVal ? typeVal.value : 'allow';
+        const appTo     = (document.getElementById('adAce-appliesTo')||{}).value || 'this_folder_subfolders_files';
+        let mask = 0;
+        document.querySelectorAll('.adAce-bit').forEach(cb => { if (cb.checked) mask |= parseInt(cb.dataset.bit); });
+        const permissions = [hex(mask)];
+        if (AD._aceEdit) {
+            adSendRequest('ntfs_modify_ace', { local_path: path, ace_index: AD._aceEdit.index, ace_type: aceType, principal, permissions, applies_to: appTo }, (r) => {
+                if (r && r.ok) { adCloseModal('adEditAceModal'); AD.propsAcl = null; adRenderAdvancedAces(); }
+                else alert('Erro: ' + ((r && r.error) || (r && r.output) || 'falha'));
+            });
+        } else {
+            adSendRequest('ntfs_add_ace', { local_path: path, ace_type: aceType, principal, permissions, applies_to: appTo }, (r) => {
+                if (r && r.ok) { adCloseModal('adEditAceModal'); AD.propsAcl = null; adRenderAdvancedAces(); }
+                else alert('Erro: ' + ((r && r.error) || (r && r.output) || 'falha'));
+            });
+        }
+    };
+
+    window.adRemoveAce = function() {
+        const path = AD.advSecPath;
+        const idx  = AD.selectedAdvAce;
+        if (!path || idx === null || idx === undefined) { alert('Selecione uma ACE primeiro.'); return; }
+        adSendRequest('ntfs_remove_ace', { local_path: path, ace_index: idx }, (r) => {
+            if (r && r.ok) { AD.propsAcl = null; adRenderAdvancedAces(); }
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    window.adToggleInheritance = function(inherit) {
+        const path = AD.advSecPath;
+        if (!path) return;
+        adSendRequest('ntfs_set_inheritance', { local_path: path, inherit_from_parent: inherit }, (r) => {
+            if (r && r.ok) { AD.propsAcl = null; adRenderAdvancedAces(); }
+            else alert('Erro: ' + ((r && r.error) || (r && r.output) || 'falha'));
+        });
+    };
+
+    window.adReplaceChildPerms = function(replace) {
+        if (!replace) return;
+        const path = AD.advSecPath;
+        if (!path || !confirm('Substituir permissões em todos os filhos?')) return;
+        // rebuild SDDL with current ACL applied recursively via set_owner (simplified approach)
+        alert('Esta operação requer propagação manual das ACLs. Use samba-tool ntacl diretamente para operações recursivas.');
+        document.getElementById('adAdvSec-replaceChildren').checked = false;
+    };
+
+    function adLoadOwner() {
+        const path = AD.advSecPath;
+        const el   = document.getElementById('adAdvSec-currentOwner');
+        if (!AD.propsAcl) {
+            adSendRequest('ntfs_get_acl', { local_path: path }, (r) => {
+                if (r && r.acl) { AD.propsAcl = r.acl; el.textContent = r.acl.owner_name || r.acl.owner_sid; }
+            });
+        } else {
+            el.textContent = AD.propsAcl.owner_name || AD.propsAcl.owner_sid;
+        }
+    }
+
+    window.adSaveOwner = function() {
+        const path = AD.advSecPath;
+        const newOwner = (document.getElementById('adAdvSec-newOwner')||{}).value || '';
+        const recursive = document.getElementById('adAdvSec-ownerRecursive') && document.getElementById('adAdvSec-ownerRecursive').checked;
+        if (!path || !newOwner) return;
+        adSendRequest('ntfs_set_owner', { local_path: path, new_owner: newOwner, recursive }, (r) => {
+            if (r && r.ok) { AD.propsAcl = null; adLoadOwner(); alert('Proprietário alterado!'); }
+            else alert('Erro: ' + ((r && r.error) || (r && r.output) || 'falha'));
+        });
+    };
+
+    window.adLoadEffectivePerms = function() {
+        const path = AD.advSecPath;
+        const user = (document.getElementById('adAdvSec-effectiveUser')||{}).value || '';
+        const el   = document.getElementById('adAdvSec-effectiveList');
+        if (!path || !user) return;
+        el.innerHTML = '<div class="ad-loading">&#9203; Carregando...</div>';
+        adSendRequest('ntfs_effective_perms', { local_path: path, principal: user }, (r) => {
+            if (r && r.error) { el.innerHTML = '<div class="ad-empty">' + escapeHtml(r.error) + '</div>'; return; }
+            const granular = (r && r.granular) || [];
+            el.innerHTML = '<div style="font-size:12px;font-weight:600;margin-bottom:8px">Permissões efetivas para: <span style="color:var(--accent)">' + escapeHtml(user) + '</span></div>' +
+                '<div style="display:grid;grid-template-columns:1fr auto;gap:4px 12px;font-size:12px">' +
+                granular.map(g =>
+                    '<div>' + escapeHtml(g.name) + '</div>' +
+                    '<div><input type="checkbox" ' + (g.allowed ? 'checked' : '') + ' disabled></div>'
+                ).join('') + '</div>';
+        });
+    };
+
+    // ─── Configuração do Compartilhamento ─────────────────────────────────────
+
+    window.adOpenShareSettings = function(shareName) {
+        AD.settingsShareName = shareName;
+        document.getElementById('adShareSettings-title').textContent = 'Configurações: ' + shareName;
+        document.getElementById('adShareSettings-body').innerHTML = '<div class="ad-loading">&#9203; Carregando...</div>';
+        adSendRequest('share_get_full', { share_name: shareName }, (r) => {
+            if (r && r.error) { document.getElementById('adShareSettings-body').innerHTML = '<div class="ad-empty">' + escapeHtml(r.error) + '</div>'; return; }
+            adRenderShareSettings(r);
+        });
+        showModal('adShareSettingsModal');
+    };
+
+    function adRenderShareSettings(data) {
+        const opts = data.options || {};
+        const disk = data.disk || {};
+        const el   = document.getElementById('adShareSettings-body');
+        const fld  = (label, id, val, type='text', placeholder='') =>
+            '<div class="ad-field"><label>' + label + '</label>' +
+            (type === 'check'
+                ? '<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="' + id + '" ' + (val === 'yes' ? 'checked' : '') + '></label>'
+                : '<input type="' + type + '" id="' + id + '" value="' + adXmlEsc(String(val||'')) + '" placeholder="' + adXmlEsc(placeholder) + '">') +
+            '</div>';
+        const ta = (label, id, val) =>
+            '<div class="ad-field"><label>' + label + '</label>' +
+            '<textarea id="' + id + '" style="width:100%;height:60px;font-size:12px;background:var(--bg-alt);border:1px solid var(--border);color:var(--text);padding:6px;box-sizing:border-box">' +
+            adXmlEsc(val||'') + '</textarea></div>';
+        const sec = (title) => '<div class="share-settings-section">' + title + '</div>';
+
+        let html = '';
+        if (disk.total) html += '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">' +
+            'Disco: ' + adFmtBytes(disk.used||0) + ' de ' + adFmtBytes(disk.total) + ' usados (' + Math.round((disk.used||0)/disk.total*100) + '%)</div>';
+
+        html += sec('Acesso');
+        html += fld('Somente leitura', 'adSS-readOnly', opts['read only']||'no', 'check');
+        html += fld('Acesso de convidados', 'adSS-guestOk', opts['guest ok']||'no', 'check');
+        html += fld('Navegável', 'adSS-browseable', opts['browseable']||'yes', 'check');
+        html += fld('Disponível', 'adSS-available', opts['available']||'yes', 'check');
+
+        html += sec('Permissões');
+        html += ta('Valid users (um por linha)', 'adSS-validUsers', opts['valid users']||'');
+        html += ta('Invalid users', 'adSS-invalidUsers', opts['invalid users']||'');
+        html += ta('Read list', 'adSS-readList', opts['read list']||'');
+        html += ta('Write list', 'adSS-writeList', opts['write list']||'');
+        html += ta('Admin users', 'adSS-adminUsers', opts['admin users']||'');
+        html += fld('Force user', 'adSS-forceUser', opts['force user']||'');
+        html += fld('Force group', 'adSS-forceGroup', opts['force group']||'');
+
+        html += sec('Criação de Arquivos');
+        html += fld('Create mask', 'adSS-createMask', opts['create mask']||'0644', 'text', '0644');
+        html += fld('Directory mask', 'adSS-dirMask', opts['directory mask']||'0755', 'text', '0755');
+        html += fld('Force create mode', 'adSS-forceCreate', opts['force create mode']||'');
+        html += fld('Force directory mode', 'adSS-forceDir', opts['force directory mode']||'');
+        html += fld('Inherit permissions', 'adSS-inheritPerms', opts['inherit permissions']||'no', 'check');
+        html += fld('Inherit ACLs', 'adSS-inheritAcls', opts['inherit acls']||'no', 'check');
+        html += fld('Inherit owner', 'adSS-inheritOwner', opts['inherit owner']||'no', 'check');
+
+        html += sec('ACL');
+        html += fld('NT ACL support', 'adSS-ntAcl', opts['nt acl support']||'yes', 'check');
+        html += fld('ACL group control', 'adSS-aclGroup', opts['acl group control']||'no', 'check');
+        html += fld('Map ACL inherit', 'adSS-mapAcl', opts['map acl inherit']||'no', 'check');
+        html += fld('Store DOS attributes', 'adSS-storeDos', opts['store dos attributes']||'no', 'check');
+        html += fld('Map archive', 'adSS-mapArchive', opts['map archive']||'yes', 'check');
+        html += fld('Map hidden', 'adSS-mapHidden', opts['map hidden']||'no', 'check');
+        html += fld('Map readonly', 'adSS-mapReadonly', opts['map readonly']||'yes', 'check');
+        html += fld('Map system', 'adSS-mapSystem', opts['map system']||'no', 'check');
+
+        html += sec('Avançado');
+        html += fld('Max connections', 'adSS-maxConn', opts['max connections']||'0', 'number', '0=ilimitado');
+        html += fld('VFS objects', 'adSS-vfsObjects', opts['vfs objects']||'');
+        html += fld('Comentário', 'adSS-comment', opts['comment']||'');
+        html += '<div class="ad-field"><label>Caminho</label><input type="text" value="' + adXmlEsc(opts['path']||'') + '" readonly style="background:var(--bg-alt)"></div>';
+
+        el.innerHTML = html;
+    }
+
+    window.adSaveShareSettings = function() {
+        const name = AD.settingsShareName;
+        if (!name) return;
+        const chk = (id) => (document.getElementById(id) && document.getElementById(id).checked) ? 'yes' : 'no';
+        const val = (id) => (document.getElementById(id) && document.getElementById(id).value) || null;
+        const options = {
+            'read only':             chk('adSS-readOnly'),
+            'guest ok':              chk('adSS-guestOk'),
+            'browseable':            chk('adSS-browseable'),
+            'available':             chk('adSS-available'),
+            'valid users':           val('adSS-validUsers'),
+            'invalid users':         val('adSS-invalidUsers'),
+            'read list':             val('adSS-readList'),
+            'write list':            val('adSS-writeList'),
+            'admin users':           val('adSS-adminUsers'),
+            'force user':            val('adSS-forceUser') || null,
+            'force group':           val('adSS-forceGroup') || null,
+            'create mask':           val('adSS-createMask'),
+            'directory mask':        val('adSS-dirMask'),
+            'force create mode':     val('adSS-forceCreate') || null,
+            'force directory mode':  val('adSS-forceDir')    || null,
+            'inherit permissions':   chk('adSS-inheritPerms'),
+            'inherit acls':          chk('adSS-inheritAcls'),
+            'inherit owner':         chk('adSS-inheritOwner'),
+            'nt acl support':        chk('adSS-ntAcl'),
+            'acl group control':     chk('adSS-aclGroup'),
+            'map acl inherit':       chk('adSS-mapAcl'),
+            'store dos attributes':  chk('adSS-storeDos'),
+            'map archive':           chk('adSS-mapArchive'),
+            'map hidden':            chk('adSS-mapHidden'),
+            'map readonly':          chk('adSS-mapReadonly'),
+            'map system':            chk('adSS-mapSystem'),
+            'max connections':       val('adSS-maxConn'),
+            'vfs objects':           val('adSS-vfsObjects') || null,
+            'comment':               val('adSS-comment'),
+        };
+        adSendRequest('share_update', { share_name: name, options }, (r) => {
+            if (r && r.ok) { adCloseModal('adShareSettingsModal'); adLoadSharesBrowser(); alert('Configurações salvas!'); }
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    window.adDeleteShareConfirm = function() {
+        const name = AD.settingsShareName;
+        adDeleteShareConfirmFor(name);
+    };
+
+    window.adDeleteShareConfirmFor = function(name) {
+        if (!name || !confirm('Excluir o compartilhamento "' + name + '"?\nEsta ação remove a seção do smb.conf.')) return;
+        adSendRequest('share_delete', { share_name: name }, (r) => {
+            if (r && r.ok) { adCloseModal('adShareSettingsModal'); adLoadSharesBrowser(); }
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    window.adShareRenameDialog = function(name) {
+        const newName = prompt('Novo nome para o compartilhamento:', name);
+        if (!newName || newName === name) return;
+        adSendRequest('share_rename', { old_name: name, new_name: newName }, (r) => {
+            if (r && r.ok) adLoadSharesBrowser();
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    // ─── Selecionar Principal ─────────────────────────────────────────────────
+
+    window.adOpenSelectPrincipal = function(callback) {
+        AD._principalCallback = callback;
+        AD._selectedPrincipal = null;
+        document.getElementById('adSelPrincipal-search').value = '';
+        document.getElementById('adSelPrincipal-list').innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text-dim)">Digite um nome e clique Pesquisar</div>';
+        showModal('adSelectPrincipalModal');
+    };
+
+    window.adSearchPrincipals = function() {
+        const q   = document.getElementById('adSelPrincipal-search').value.trim().toLowerCase();
+        const el  = document.getElementById('adSelPrincipal-list');
+        el.innerHTML = '<div class="ad-loading">&#9203; Pesquisando...</div>';
+        let results = []; let pending = 2;
+        const done = () => {
+            if (--pending > 0) return;
+            const filtered = q ? results.filter(r => r.name.toLowerCase().includes(q)) : results;
+            if (!filtered.length) { el.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text-dim)">Nenhum resultado</div>'; return; }
+            el.innerHTML = filtered.slice(0,50).map(r =>
+                '<div class="acl-principal-item" onclick="adSelectPrincipalResult(\'' + adXmlEsc(r.name).replace(/'/g,"\\'") + '\')">' +
+                (r.type === 'group' ? '&#128101;' : '&#128100;') + ' <span>' + escapeHtml(r.name) + '</span></div>'
+            ).join('');
+        };
+        adSendRequest('user_list',  {}, (r) => { ((r && r.users)  || []).forEach(u => results.push({name: u.sAMAccountName || u.cn, type:'user'})); done(); });
+        adSendRequest('group_list', {}, (r) => { ((r && r.groups) || []).forEach(g => results.push({name: g.name || g.cn, type:'group'})); done(); });
+    };
+
+    window.adSelectPrincipalResult = function(name) {
+        AD._selectedPrincipal = name;
+        document.querySelectorAll('#adSelPrincipal-list .acl-principal-item').forEach(el => {
+            el.classList.toggle('selected', el.querySelector('span') && el.querySelector('span').textContent === name);
+        });
+    };
+
+    window.adConfirmSelectPrincipal = function() {
+        const name = AD._selectedPrincipal;
+        if (!name) { alert('Selecione um principal.'); return; }
+        adCloseModal('adSelectPrincipalModal');
+        if (AD._principalCallback) AD._principalCallback(name);
+    };
+
+    function hex(n) { return '0x' + n.toString(16).toUpperCase(); }
 
     window.adViewShareACL = function(shareName) {
         adSendRequest('share_acl', { share: shareName, path: '/' }, (result) => {

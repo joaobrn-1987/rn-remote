@@ -32,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.2.6"
+AGENT_VERSION = "1.2.7"
 
 import websockets
 
@@ -1251,6 +1251,424 @@ class _ShareManager:
         except Exception as e:
             return {"error": str(e)}
 
+    # ── Helpers smb.conf ──────────────────────────────────────────────────────
+
+    def _smb_conf_path(self):
+        return os.path.join(SAMBA_ETC, "smb.conf")
+
+    def _reload_samba(self):
+        _ad_run_cmd([os.path.join(SAMBA_BIN, "smbcontrol"), "smbd", "reload-config"])
+
+    # ── Gerenciamento avançado de shares ──────────────────────────────────────
+
+    def get_share_full(self, share_name):
+        """Lê todas as opções do smb.conf + info do disco."""
+        cfg = configparser.ConfigParser(strict=False)
+        cfg.read(self._smb_conf_path())
+        if not cfg.has_section(share_name):
+            return {"error": f"Share '{share_name}' não encontrado"}
+        options = dict(cfg.items(share_name))
+        path    = options.get("path", "")
+        disk    = {}
+        if path and os.path.exists(path):
+            try:
+                sv = os.statvfs(path)
+                disk = {
+                    "total": sv.f_frsize * sv.f_blocks,
+                    "free":  sv.f_frsize * sv.f_bfree,
+                    "used":  sv.f_frsize * (sv.f_blocks - sv.f_bfree),
+                }
+            except Exception: pass
+        return {"name": share_name, "options": options, "disk": disk}
+
+    def update_share(self, share_name, options_dict):
+        """Atualiza opções no smb.conf. None remove a opção."""
+        cfg      = configparser.ConfigParser(strict=False)
+        smb_conf = self._smb_conf_path()
+        cfg.read(smb_conf)
+        if not cfg.has_section(share_name):
+            return {"error": f"Share '{share_name}' não encontrado"}
+        for key, value in options_dict.items():
+            if value is None:
+                if cfg.has_option(share_name, key): cfg.remove_option(share_name, key)
+            else:
+                cfg.set(share_name, key, str(value))
+        with open(smb_conf, "w") as f: cfg.write(f)
+        self._reload_samba()
+        return {"ok": True}
+
+    def delete_share(self, share_name):
+        """Remove seção do smb.conf."""
+        cfg      = configparser.ConfigParser(strict=False)
+        smb_conf = self._smb_conf_path()
+        cfg.read(smb_conf)
+        if not cfg.has_section(share_name):
+            return {"error": f"Share '{share_name}' não encontrado"}
+        cfg.remove_section(share_name)
+        with open(smb_conf, "w") as f: cfg.write(f)
+        self._reload_samba()
+        return {"ok": True}
+
+    def rename_share(self, old_name, new_name):
+        """Renomeia seção no smb.conf."""
+        cfg      = configparser.ConfigParser(strict=False)
+        smb_conf = self._smb_conf_path()
+        cfg.read(smb_conf)
+        if not cfg.has_section(old_name):
+            return {"error": f"Share '{old_name}' não encontrado"}
+        if cfg.has_section(new_name):
+            return {"error": f"Share '{new_name}' já existe"}
+        options = dict(cfg.items(old_name))
+        cfg.add_section(new_name)
+        for k, v in options.items(): cfg.set(new_name, k, v)
+        cfg.remove_section(old_name)
+        with open(smb_conf, "w") as f: cfg.write(f)
+        self._reload_samba()
+        return {"ok": True}
+
+    # ── SDDL / ACL helpers ────────────────────────────────────────────────────
+
+    _WELL_KNOWN = {
+        "S-1-1-0":    "Everyone",        "S-1-5-11":  "Authenticated Users",
+        "S-1-5-18":   "SYSTEM",          "S-1-5-19":  "LOCAL SERVICE",
+        "S-1-5-20":   "NETWORK SERVICE", "S-1-5-32-544": "Administrators",
+        "S-1-5-32-545": "Users",         "S-1-5-32-546": "Guests",
+        "S-1-5-32-547": "Power Users",   "S-1-5-32-548": "Account Operators",
+        "S-1-5-32-549": "Server Operators","S-1-5-32-550":"Print Operators",
+        "S-1-5-32-551": "Backup Operators","S-1-5-32-552":"Replicator",
+        "S-1-3-0":    "CREATOR OWNER",   "S-1-3-1":   "CREATOR GROUP",
+    }
+    _SDDL_ALIAS = {
+        "AO":"Account Operators",  "AN":"Anonymous",           "AU":"Authenticated Users",
+        "BA":"Administrators",     "BG":"Guests",              "BO":"Backup Operators",
+        "BU":"Users",              "CA":"Cert Publishers",     "CG":"CREATOR GROUP",
+        "CO":"CREATOR OWNER",      "DA":"Domain Admins",       "DC":"Domain Computers",
+        "DD":"Domain Controllers", "DG":"Domain Guests",       "DU":"Domain Users",
+        "EA":"Enterprise Admins",  "ED":"Enterprise DCs",      "HI":"High Integrity",
+        "LA":"Local Admin",        "LG":"Local Guest",         "LU":"Local Users",
+        "LW":"Low Integrity",      "MU":"Performance Monitor Users",
+        "NO":"Network Config Ops", "NS":"NETWORK SERVICE",     "NU":"Network",
+        "OW":"Owner Rights",       "PO":"Printer Operators",   "PS":"SELF",
+        "PU":"Power Users",        "RC":"Restricted Code",     "RD":"Remote Desktop Users",
+        "RE":"Replicator",         "RS":"RAS Servers",         "RU":"Pre-Win2000 Compat",
+        "SA":"Schema Admins",      "SI":"System Integrity",    "SO":"Server Operators",
+        "SU":"Service",            "SY":"SYSTEM",              "WD":"Everyone",
+        "WR":"WRITE RESTRICTED",   "LS":"LOCAL SERVICE",       "IU":"Interactive",
+    }
+    _PERM_BITS = [
+        (0x1F01FF, "Full Control"), (0x1301BF, "Modify"),
+        (0x1200A9, "Read & Execute"), (0x120116, "Write"), (0x120089, "Read"),
+    ]
+    _GRANULAR_BITS = [
+        (0x00001, "List Folder / Read Data"),        (0x00002, "Create Files / Write Data"),
+        (0x00004, "Create Folders / Append Data"),   (0x00008, "Read Extended Attributes"),
+        (0x00010, "Write Extended Attributes"),      (0x00020, "Traverse Folder / Execute File"),
+        (0x00040, "Delete Subfolders and Files"),    (0x00080, "Read Attributes"),
+        (0x00100, "Write Attributes"),               (0x10000, "Delete"),
+        (0x20000, "Read Permissions"),               (0x40000, "Change Permissions"),
+        (0x80000, "Take Ownership"),
+    ]
+    _APPLIES_MAP = {
+        "this_folder_only":             "",
+        "this_folder_subfolders_files": "OICI",
+        "subfolders_files_only":        "OICIIO",
+        "this_folder_subfolders":       "CI",
+        "this_folder_files":            "OI",
+        "subfolders_only":              "CIIO",
+        "files_only":                   "OIIO",
+    }
+
+    def _resolve_to_sid(self, principal):
+        lp = principal.strip()
+        for sid, name in self._WELL_KNOWN.items():
+            if name.lower() == lp.lower(): return sid
+        for alias, name in self._SDDL_ALIAS.items():
+            if name.lower() == lp.lower(): return alias
+        if lp.upper().startswith("S-"): return lp
+        r = _ad_run_cmd(["wbinfo", "--name-to-sid", lp])
+        if r["returncode"] == 0:
+            for p in r["stdout"].strip().split():
+                if p.upper().startswith("S-"): return p
+        return lp
+
+    def _sid_to_name(self, sid):
+        s = sid.strip()
+        if s in self._SDDL_ALIAS: return self._SDDL_ALIAS[s]
+        if s in self._WELL_KNOWN:  return self._WELL_KNOWN[s]
+        r = _ad_run_cmd(["wbinfo", "--sid-to-name", s])
+        if r["returncode"] == 0 and r["stdout"].strip():
+            name = r["stdout"].strip().split("\\")[-1]
+            return name.split(" ")[0]
+        return s
+
+    def _mask_to_permissions(self, mask):
+        if isinstance(mask, str):
+            try: mask = int(mask, 16) if mask.lower().startswith("0x") else int(mask, 0)
+            except Exception: return [mask]
+        if not mask: return []
+        for m, name in self._PERM_BITS:
+            if (mask & m) == m: return [name]
+        return [name for bit, name in self._GRANULAR_BITS if mask & bit] or [hex(mask)]
+
+    def _permissions_to_mask(self, permissions):
+        if isinstance(permissions, str): permissions = [permissions]
+        mask = 0
+        for p in permissions:
+            pu = p.strip().upper()
+            for m, name in self._PERM_BITS:
+                if name.upper() == pu: mask |= m; break
+            else:
+                for bit, name in self._GRANULAR_BITS:
+                    if name.upper() == pu: mask |= bit; break
+                else:
+                    try: mask |= int(p, 16) if p.startswith("0x") else int(p)
+                    except Exception: pass
+        return mask
+
+    def _applies_to_flags(self, applies_to):
+        return self._APPLIES_MAP.get(applies_to, "OICI")
+
+    def _flags_to_applies_to(self, flags):
+        inv = {v: k for k, v in self._APPLIES_MAP.items()}
+        f   = "".join(c for c in flags.upper() if c not in "ID")
+        return inv.get(f, "this_folder_subfolders_files")
+
+    def _parse_aces(self, aces_str):
+        import re
+        aces = []
+        for i, m in enumerate(re.finditer(r'\(([^)]*)\)', aces_str)):
+            fields = (m.group(1).split(";") + ["","","","","",""])[:6]
+            ace_type = fields[0]; flags = fields[1]; rights = fields[2]; sid = fields[5]
+            mask_val = 0
+            try:
+                mask_val = int(rights, 16) if rights.lower().startswith("0x") else (int(rights) if rights.isdigit() else 0)
+            except Exception: pass
+            aces.append({
+                "index": i, "type": ace_type, "flags": flags, "rights": rights, "sid": sid, "mask": mask_val,
+                "_display_type":        "Allow" if ace_type == "A" else ("Deny" if ace_type == "D" else ace_type),
+                "_display_principal":   self._sid_to_name(sid),
+                "_display_permissions": self._mask_to_permissions(mask_val),
+                "_display_inherited":   "ID" in flags.upper(),
+                "_display_applies_to":  self._flags_to_applies_to(flags),
+            })
+        return aces
+
+    def _parse_sddl(self, sddl):
+        import re
+        result = {"owner_sid": "", "group_sid": "", "dacl": [], "sacl": [], "dacl_flags": ""}
+        m = re.search(r'O:([A-Za-z]{2}|S-[\d\-]+)', sddl)
+        if m: result["owner_sid"] = m.group(1)
+        m = re.search(r'G:([A-Za-z]{2}|S-[\d\-]+)', sddl)
+        if m: result["group_sid"] = m.group(1)
+        m = re.search(r'D:([^(S]*)(\(.*?)(?=S:|$)', sddl, re.DOTALL)
+        if m:
+            result["dacl_flags"] = m.group(1)
+            result["dacl"]       = self._parse_aces(m.group(2))
+        m = re.search(r'S:[^(]*(\(.*)', sddl, re.DOTALL)
+        if m:
+            result["sacl"] = self._parse_aces(m.group(1))
+        return result
+
+    def _rebuild_sddl(self, owner, group, dacl_list, sacl_list, dacl_flags=""):
+        def ace_str(a): return f"({a['type']};{a['flags']};{a['rights']};;;{a['sid']})"
+        sddl = f"O:{owner}G:{group}D:{dacl_flags}"
+        for a in dacl_list: sddl += ace_str(a)
+        if sacl_list:
+            sddl += "S:"
+            for a in sacl_list: sddl += ace_str(a)
+        return sddl
+
+    # ── NTFS ACL methods ──────────────────────────────────────────────────────
+
+    def get_ntfs_acl(self, local_path):
+        r = _samba_tool("ntacl", "get", local_path, "--as-sddl")
+        if r["returncode"] != 0:
+            return {"error": r["stderr"] or "Falha ao ler ACL"}
+        sddl   = r["stdout"].strip()
+        parsed = self._parse_sddl(sddl)
+        parsed["sddl"]       = sddl
+        parsed["path"]       = local_path
+        parsed["owner_name"] = self._sid_to_name(parsed["owner_sid"])
+        parsed["group_name"] = self._sid_to_name(parsed["group_sid"])
+        return {"acl": parsed}
+
+    def set_ntfs_acl(self, local_path, sddl):
+        r = _samba_tool("ntacl", "set", sddl, local_path)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def add_ace(self, local_path, ace_type, principal, permissions, applies_to="this_folder_subfolders_files"):
+        r_acl = self.get_ntfs_acl(local_path)
+        if r_acl.get("error"): return r_acl
+        acl   = r_acl["acl"]
+        sid   = self._resolve_to_sid(principal)
+        mask  = self._permissions_to_mask(permissions if isinstance(permissions, list) else [permissions])
+        flags = self._applies_to_flags(applies_to)
+        new_ace = {"type": "A" if ace_type.lower() in ("allow","a") else "D",
+                   "flags": flags, "rights": hex(mask), "sid": sid}
+        acl["dacl"].insert(0, new_ace)
+        sddl = self._rebuild_sddl(acl["owner_sid"], acl["group_sid"], acl["dacl"], acl["sacl"], acl.get("dacl_flags",""))
+        return self.set_ntfs_acl(local_path, sddl)
+
+    def remove_ace(self, local_path, ace_index):
+        r_acl = self.get_ntfs_acl(local_path)
+        if r_acl.get("error"): return r_acl
+        acl  = r_acl["acl"]
+        dacl = [a for a in acl["dacl"] if a["index"] != ace_index]
+        sddl = self._rebuild_sddl(acl["owner_sid"], acl["group_sid"], dacl, acl["sacl"], acl.get("dacl_flags",""))
+        return self.set_ntfs_acl(local_path, sddl)
+
+    def modify_ace(self, local_path, ace_index, ace_type, principal, permissions, applies_to):
+        r_acl = self.get_ntfs_acl(local_path)
+        if r_acl.get("error"): return r_acl
+        acl   = r_acl["acl"]
+        sid   = self._resolve_to_sid(principal)
+        mask  = self._permissions_to_mask(permissions if isinstance(permissions, list) else [permissions])
+        flags = self._applies_to_flags(applies_to)
+        for a in acl["dacl"]:
+            if a["index"] == ace_index:
+                a["type"] = "A" if ace_type.lower() in ("allow","a") else "D"
+                a["flags"] = flags; a["rights"] = hex(mask); a["sid"] = sid
+                break
+        sddl = self._rebuild_sddl(acl["owner_sid"], acl["group_sid"], acl["dacl"], acl["sacl"], acl.get("dacl_flags",""))
+        return self.set_ntfs_acl(local_path, sddl)
+
+    def set_owner(self, local_path, new_owner, recursive=False):
+        r_acl = self.get_ntfs_acl(local_path)
+        if r_acl.get("error"): return r_acl
+        acl  = r_acl["acl"]
+        sid  = self._resolve_to_sid(new_owner)
+        sddl = self._rebuild_sddl(sid, acl["group_sid"], acl["dacl"], acl["sacl"], acl.get("dacl_flags",""))
+        r    = self.set_ntfs_acl(local_path, sddl)
+        if r.get("ok") and recursive:
+            for root, dirs, files in os.walk(local_path):
+                for name in dirs + files:
+                    self.set_ntfs_acl(os.path.join(root, name), sddl)
+        return r
+
+    def set_inheritance(self, local_path, inherit_from_parent, replace_children=False):
+        r_acl = self.get_ntfs_acl(local_path)
+        if r_acl.get("error"): return r_acl
+        acl   = r_acl["acl"]
+        flags = acl.get("dacl_flags", "")
+        flags = flags.replace("P", "") if inherit_from_parent else (flags if "P" in flags else flags + "P")
+        sddl  = self._rebuild_sddl(acl["owner_sid"], acl["group_sid"], acl["dacl"], acl["sacl"], flags)
+        return self.set_ntfs_acl(local_path, sddl)
+
+    def get_effective_permissions(self, local_path, principal):
+        r_acl = self.get_ntfs_acl(local_path)
+        if r_acl.get("error"): return r_acl
+        acl  = r_acl["acl"]
+        sid  = self._resolve_to_sid(principal)
+        allow_mask = deny_mask = 0
+        for a in acl["dacl"]:
+            if a["sid"] == sid or a["sid"] in ("WD","AU"):
+                if a["type"] == "A": allow_mask |= a["mask"]
+                elif a["type"] == "D": deny_mask |= a["mask"]
+        effective = allow_mask & ~deny_mask
+        return {
+            "principal":   principal,
+            "mask":        effective,
+            "permissions": self._mask_to_permissions(effective),
+            "granular":    [{"name": name, "allowed": bool(effective & bit)} for bit, name in self._GRANULAR_BITS],
+        }
+
+    # ── Share permissions ─────────────────────────────────────────────────────
+
+    def get_share_permissions(self, share_name):
+        cfg = configparser.ConfigParser(strict=False)
+        cfg.read(self._smb_conf_path())
+        if not cfg.has_section(share_name):
+            return {"error": f"Share '{share_name}' não encontrado"}
+        keys = ["valid users","invalid users","read list","write list",
+                "admin users","guest ok","read only"]
+        return {"permissions": {k: cfg.get(share_name, k, fallback="") for k in keys}}
+
+    def set_share_permissions(self, share_name, perms_dict):
+        return self.update_share(share_name, perms_dict)
+
+    # ── Navegação avançada ────────────────────────────────────────────────────
+
+    def browse_path_full(self, local_path):
+        import pwd, grp as grpmod
+        try:
+            entries = []
+            for name in sorted(os.listdir(local_path)):
+                full = os.path.join(local_path, name)
+                try:
+                    st = os.stat(full)
+                    try:    owner = pwd.getpwuid(st.st_uid).pw_name
+                    except: owner = str(st.st_uid)
+                    try:    group = grpmod.getgrgid(st.st_gid).gr_name
+                    except: group = str(st.st_gid)
+                    entries.append({
+                        "name":       name,
+                        "path":       full,
+                        "is_dir":     stat.S_ISDIR(st.st_mode),
+                        "size":       st.st_size,
+                        "modified":   st.st_mtime,
+                        "created":    getattr(st, "st_birthtime", st.st_ctime),
+                        "mode":       oct(stat.S_IMODE(st.st_mode)),
+                        "uid":        st.st_uid, "gid": st.st_gid,
+                        "owner":      owner, "group": group,
+                        "readable":   os.access(full, os.R_OK),
+                        "writable":   os.access(full, os.W_OK),
+                        "executable": os.access(full, os.X_OK),
+                    })
+                except OSError:
+                    entries.append({"name": name, "path": full, "is_dir": False})
+            return {"entries": sorted(entries, key=lambda x: (not x.get("is_dir"), x["name"]))}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def get_path_info(self, local_path):
+        import pwd, grp as grpmod
+        try:
+            st = os.stat(local_path)
+            try:    owner = pwd.getpwuid(st.st_uid).pw_name
+            except: owner = str(st.st_uid)
+            try:    group = grpmod.getgrgid(st.st_gid).gr_name
+            except: group = str(st.st_gid)
+            info = {
+                "name":     os.path.basename(local_path), "path": local_path,
+                "is_dir":   stat.S_ISDIR(st.st_mode),     "size": st.st_size,
+                "modified": st.st_mtime,  "created":  getattr(st, "st_birthtime", st.st_ctime),
+                "accessed": st.st_atime,  "mode":     oct(stat.S_IMODE(st.st_mode)),
+                "uid": st.st_uid, "gid": st.st_gid, "owner": owner, "group": group,
+            }
+            if info["is_dir"]:
+                try:
+                    sv = os.statvfs(local_path)
+                    info["disk_total"] = sv.f_frsize * sv.f_blocks
+                    info["disk_free"]  = sv.f_frsize * sv.f_bfree
+                    info["disk_used"]  = sv.f_frsize * (sv.f_blocks - sv.f_bfree)
+                    items = os.listdir(local_path)
+                    info["item_count"]   = len(items)
+                    info["folder_count"] = sum(1 for i in items if os.path.isdir(os.path.join(local_path, i)))
+                    info["file_count"]   = info["item_count"] - info["folder_count"]
+                except Exception: pass
+            return {"info": info}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def delete_path(self, local_path, recursive=False):
+        try:
+            if os.path.isdir(local_path):
+                if recursive: import shutil; shutil.rmtree(local_path)
+                else:         os.rmdir(local_path)
+            else:
+                os.remove(local_path)
+            return {"ok": True}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def rename_path(self, old_path, new_name):
+        try:
+            new_path = os.path.join(os.path.dirname(old_path), new_name)
+            os.rename(old_path, new_path)
+            return {"ok": True, "new_path": new_path}
+        except Exception as e:
+            return {"error": str(e)}
+
 
 class _DNSManager:
 
@@ -2027,8 +2445,26 @@ class LinuxAgent:
             "share_browse":        lambda p: self._ad_shares.browse_path(p["local_path"]),
             "share_set_posix":     lambda p: self._ad_shares.set_posix_acl(
                                        p["path"], p.get("owner",""), p.get("group",""), p.get("mode","")),
-            "share_mkdir":         lambda p: self._ad_shares.create_directory(p["path"]),
-            "dns_zones":           lambda p: self._ad_dns.list_zones(),
+            "share_mkdir":           lambda p: self._ad_shares.create_directory(p["path"]),
+            "share_get_full":        lambda p: self._ad_shares.get_share_full(p["share_name"]),
+            "share_update":          lambda p: self._ad_shares.update_share(p["share_name"], p["options"]),
+            "share_delete":          lambda p: self._ad_shares.delete_share(p["share_name"]),
+            "share_rename":          lambda p: self._ad_shares.rename_share(p["old_name"], p["new_name"]),
+            "share_get_permissions": lambda p: self._ad_shares.get_share_permissions(p["share_name"]),
+            "share_set_permissions": lambda p: self._ad_shares.set_share_permissions(p["share_name"], p["perms"]),
+            "ntfs_get_acl":          lambda p: self._ad_shares.get_ntfs_acl(p["local_path"]),
+            "ntfs_set_acl":          lambda p: self._ad_shares.set_ntfs_acl(p["local_path"], p["sddl"]),
+            "ntfs_add_ace":          lambda p: self._ad_shares.add_ace(p["local_path"], p["ace_type"], p["principal"], p["permissions"], p.get("applies_to","this_folder_subfolders_files")),
+            "ntfs_remove_ace":       lambda p: self._ad_shares.remove_ace(p["local_path"], p["ace_index"]),
+            "ntfs_modify_ace":       lambda p: self._ad_shares.modify_ace(p["local_path"], p["ace_index"], p["ace_type"], p["principal"], p["permissions"], p.get("applies_to","this_folder_subfolders_files")),
+            "ntfs_set_owner":        lambda p: self._ad_shares.set_owner(p["local_path"], p["new_owner"], p.get("recursive", False)),
+            "ntfs_set_inheritance":  lambda p: self._ad_shares.set_inheritance(p["local_path"], p["inherit_from_parent"], p.get("replace_children", False)),
+            "ntfs_effective_perms":  lambda p: self._ad_shares.get_effective_permissions(p["local_path"], p["principal"]),
+            "path_browse_full":      lambda p: self._ad_shares.browse_path_full(p["local_path"]),
+            "path_delete":           lambda p: self._ad_shares.delete_path(p["local_path"], p.get("recursive", False)),
+            "path_rename":           lambda p: self._ad_shares.rename_path(p["local_path"], p["new_name"]),
+            "path_info":             lambda p: self._ad_shares.get_path_info(p["local_path"]),
+            "dns_zones":             lambda p: self._ad_dns.list_zones(),
             "dns_records":         lambda p: self._ad_dns.list_records(p["zone"]),
             "dns_add":             lambda p: self._ad_dns.add_record(
                                        p["zone"], p["name"], p["record_type"], p["data"]),
