@@ -32,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.1.9"
+AGENT_VERSION = "1.2.5"
 
 import websockets
 
@@ -161,7 +161,7 @@ def _samba_tool(*args):
     return _ad_run_cmd([os.path.join(SAMBA_BIN, "samba-tool")] + list(args))
 
 
-def _ldbsearch(base, scope="subtree", attrs=None, expression=None):
+def _ldbsearch(base, scope="sub", attrs=None, expression=None):
     cmd = [os.path.join(SAMBA_BIN, "ldbsearch"), "-H", os.path.join(SAMBA_PRIVATE, "sam.ldb")]
     if base:
         cmd += ["-b", base]
@@ -226,13 +226,13 @@ def _parse_ldb_output(stdout):
 
 
 def _ad_get_realm():
-    cfg = configparser.ConfigParser()
+    cfg = configparser.ConfigParser(strict=False)
     cfg.read(os.path.join(SAMBA_ETC, "smb.conf"))
     return cfg.get("global", "realm", fallback="").strip()
 
 
 def _ad_get_domain_name():
-    cfg = configparser.ConfigParser()
+    cfg = configparser.ConfigParser(strict=False)
     cfg.read(os.path.join(SAMBA_ETC, "smb.conf"))
     return cfg.get("global", "workgroup", fallback="").strip()
 
@@ -270,7 +270,7 @@ class _UserManager:
 
     def list_users(self, ou=None):
         base = ou or _ad_get_domain_dn()
-        r = _ldbsearch(base, "subtree", self._USER_ATTRS, "(&(objectClass=user)(objectCategory=person))")
+        r = _ldbsearch(base, "sub", self._USER_ATTRS, "(&(objectClass=user)(objectCategory=person))")
         if r["returncode"] != 0:
             return {"error": r["stderr"]}
         users = []
@@ -283,7 +283,7 @@ class _UserManager:
         return {"users": users}
 
     def get_user(self, username):
-        r = _ldbsearch(_ad_get_domain_dn(), "subtree", self._USER_ATTRS,
+        r = _ldbsearch(_ad_get_domain_dn(), "sub", self._USER_ATTRS,
                        f"(sAMAccountName={username})")
         if r["returncode"] != 0:
             return {"error": r["stderr"]}
@@ -298,7 +298,13 @@ class _UserManager:
         if given_name: args += ["--given-name", given_name]
         if surname:    args += ["--surname", surname]
         if mail:       args += ["--mail-address", mail]
-        if ou:         args += ["--userou", ou]
+        if ou:
+            # samba-tool --userou expects only OU= components, without DC= parts.
+            # Strip DC= components in case a full DN was passed (e.g. from the UI).
+            ou_parts = [p for p in ou.split(",") if not p.strip().upper().startswith("DC=")]
+            ou_stripped = ",".join(ou_parts).strip(",")
+            if ou_stripped:
+                args += ["--userou", ou_stripped]
         if must_change_password: args.append("--must-change-at-next-login")
         if unix_attrs:
             if unix_attrs.get("uid_number"):   args += ["--uid-number",   str(unix_attrs["uid_number"])]
@@ -364,7 +370,7 @@ class _GroupManager:
         base = ou or _ad_get_domain_dn()
         attrs = ["cn", "sAMAccountName", "description", "distinguishedName",
                  "member", "groupType", "whenCreated", "gidNumber", "managedBy"]
-        r = _ldbsearch(base, "subtree", attrs, "(objectClass=group)")
+        r = _ldbsearch(base, "sub", attrs, "(objectClass=group)")
         if r["returncode"] != 0: return {"error": r["stderr"]}
         groups = []
         for entry in _parse_ldb_output(r["stdout"]):
@@ -383,7 +389,7 @@ class _GroupManager:
     def get_group(self, groupname):
         attrs = ["cn","sAMAccountName","description","distinguishedName",
                  "member","groupType","whenCreated","gidNumber","managedBy"]
-        r = _ldbsearch(_ad_get_domain_dn(), "subtree", attrs, f"(sAMAccountName={groupname})")
+        r = _ldbsearch(_ad_get_domain_dn(), "sub", attrs, f"(sAMAccountName={groupname})")
         if r["returncode"] != 0: return {"error": r["stderr"]}
         entries = _parse_ldb_output(r["stdout"])
         if not entries: return {"error": "Grupo não encontrado"}
@@ -396,7 +402,13 @@ class _GroupManager:
         if group_scope.lower() == "domainlocal":  args.append("--group-scope=DomainLocal")
         elif group_scope.lower() == "universal":  args.append("--group-scope=Universal")
         if description: args += ["--description", description]
-        if ou:          args += ["--groupou", ou]
+        if ou:
+            # samba-tool --groupou expects only OU= components, without DC= parts.
+            # Strip DC= components in case a full DN was passed (e.g. from the UI).
+            ou_parts = [p for p in ou.split(",") if not p.strip().upper().startswith("DC=")]
+            ou_stripped = ",".join(ou_parts).strip(",")
+            if ou_stripped:
+                args += ["--groupou", ou_stripped]
         if gid_number:  args += ["--gid-number", str(gid_number)]
         r = _samba_tool(*args)
         return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
@@ -422,7 +434,7 @@ class _GroupManager:
 class _OUManager:
 
     def list_ous(self):
-        r = _ldbsearch(_ad_get_domain_dn(), "subtree",
+        r = _ldbsearch(_ad_get_domain_dn(), "sub",
                        ["ou","description","distinguishedName","whenCreated"],
                        "(objectClass=organizationalUnit)")
         if r["returncode"] != 0: return {"error": r["stderr"]}
@@ -460,7 +472,7 @@ class _OUManager:
 
     def get_ou_tree(self):
         base = _ad_get_domain_dn()
-        r = _ldbsearch(base, "subtree",
+        r = _ldbsearch(base, "sub",
                        ["distinguishedName","ou","cn","objectClass","name"],
                        "(|(objectClass=organizationalUnit)(objectClass=container)(objectClass=builtinDomain))")
         if r["returncode"] != 0: return {"error": r["stderr"]}
@@ -576,29 +588,92 @@ class _GPOManager:
         if r["returncode"] != 0: return {"error": r["stderr"]}
         return {"output": r["stdout"]}
 
+    def _sysvol_base(self, gpo_guid):
+        return os.path.join(SYSVOL_PATH, _ad_get_realm().lower(), "Policies", gpo_guid)
+
+    def _bump_version(self, gpo_guid):
+        gpt_path = os.path.join(self._sysvol_base(gpo_guid), "GPT.INI")
+        ini = configparser.ConfigParser(strict=False)
+        if os.path.exists(gpt_path): ini.read(gpt_path)
+        ver_str = ini.get("General", "Version", fallback="0") if ini.has_section("General") else "0"
+        ver = int(ver_str) if ver_str.isdigit() else 0
+        if not ini.has_section("General"): ini.add_section("General")
+        ini.set("General", "Version", str(ver + 1))
+        with open(gpt_path, "w") as f: ini.write(f)
+
     def set_security_setting(self, gpo_guid, section, key, value):
-        realm = _ad_get_realm().lower()
-        tmpl_path = os.path.join(SYSVOL_PATH, realm, "Policies", gpo_guid,
+        tmpl_path = os.path.join(self._sysvol_base(gpo_guid),
                                  "MACHINE", "Microsoft", "Windows NT", "SecEdit", "GptTmpl.inf")
-        gpt_path = os.path.join(SYSVOL_PATH, realm, "Policies", gpo_guid, "GPT.INI")
         try:
-            cfg = configparser.ConfigParser()
+            cfg = configparser.ConfigParser(strict=False)
             if os.path.exists(tmpl_path): cfg.read(tmpl_path, encoding="utf-8")
             if not cfg.has_section(section): cfg.add_section(section)
             cfg.set(section, key, str(value))
             os.makedirs(os.path.dirname(tmpl_path), exist_ok=True)
             with open(tmpl_path, "w", encoding="utf-8") as f:
                 cfg.write(f)
-            ini = configparser.ConfigParser()
-            if os.path.exists(gpt_path): ini.read(gpt_path)
-            ver_str = ini.get("General", "Version", fallback="0") if ini.has_section("General") else "0"
-            ver = int(ver_str) if ver_str.isdigit() else 0
-            if not ini.has_section("General"): ini.add_section("General")
-            ini.set("General", "Version", str(ver + 1))
-            with open(gpt_path, "w") as f: ini.write(f)
+            self._bump_version(gpo_guid)
             return {"ok": True}
         except Exception as e:
             return {"error": str(e)}
+
+    def read_file(self, gpo_guid, rel_path):
+        full = os.path.normpath(os.path.join(self._sysvol_base(gpo_guid), rel_path))
+        base = self._sysvol_base(gpo_guid)
+        if not full.startswith(base):
+            return {"error": "Caminho inválido"}
+        if not os.path.exists(full):
+            return {"content": "", "exists": False}
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as f:
+                return {"content": f.read(), "exists": True}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def write_file(self, gpo_guid, rel_path, content):
+        full = os.path.normpath(os.path.join(self._sysvol_base(gpo_guid), rel_path))
+        base = self._sysvol_base(gpo_guid)
+        if not full.startswith(base):
+            return {"error": "Caminho inválido"}
+        try:
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(content)
+            self._bump_version(gpo_guid)
+            return {"ok": True}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def list_files(self, gpo_guid):
+        base = self._sysvol_base(gpo_guid)
+        if not os.path.isdir(base):
+            return {"files": []}
+        files = []
+        for root, dirs, filenames in os.walk(base):
+            for fn in filenames:
+                rel = os.path.relpath(os.path.join(root, fn), base).replace(os.sep, "/")
+                files.append(rel)
+        return {"files": sorted(files)}
+
+    def rename(self, gpo_guid, new_name):
+        domain_dn = _ad_get_domain_dn()
+        dn = f"CN={gpo_guid},CN=Policies,CN=System,{domain_dn}"
+        ldif = f"dn: {dn}\nchangetype: modify\nreplace: displayName\ndisplayName: {new_name}\n"
+        r = _ldbmodify(ldif)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def get_links(self, gpo_guid):
+        """Return list of OUs that link to this GPO (searches gpLink attribute)."""
+        domain_dn = _ad_get_domain_dn()
+        r = _ldbsearch(domain_dn, "sub", ["dn", "gpLink", "distinguishedName"],
+                        f"(gpLink=*{gpo_guid}*)")
+        if r["returncode"] != 0:
+            return {"links": []}
+        entries = _parse_ldb_output(r["stdout"])
+        links = []
+        for e in entries:
+            links.append({"dn": e.get("dn", ""), "name": e.get("dn", "").split(",")[0].split("=")[-1]})
+        return {"links": links}
 
 
 class _ShareManager:
@@ -608,7 +683,7 @@ class _ShareManager:
 
     def list_shares(self):
         """Lê compartilhamentos diretamente do smb.conf — sem precisar de credenciais."""
-        cfg = configparser.ConfigParser()
+        cfg = configparser.ConfigParser(strict=False)
         cfg.read(os.path.join(SAMBA_ETC, "smb.conf"))
         shares = []
         for section in cfg.sections():
@@ -625,7 +700,7 @@ class _ShareManager:
 
     def get_acl(self, share, path="/"):
         """Usa samba-tool ntacl get com o path local — não precisa de conexão SMB."""
-        cfg = configparser.ConfigParser()
+        cfg = configparser.ConfigParser(strict=False)
         cfg.read(os.path.join(SAMBA_ETC, "smb.conf"))
         local_path = cfg.get(share, "path", fallback="") if cfg.has_section(share) else ""
         if not local_path:
@@ -695,7 +770,7 @@ class _DNSManager:
 
     def _dns_ldbsearch(self, base, expression=None, attrs=None):
         """Pesquisa diretamente no sam.ldb sem precisar de credenciais de rede."""
-        return _ldbsearch(base, "subtree", attrs, expression)
+        return _ldbsearch(base, "sub", attrs, expression)
 
     def list_zones(self):
         domain_dn = _ad_get_domain_dn()
@@ -759,7 +834,7 @@ class _DomainInfo:
     def get_computers(self):
         attrs = ["cn","sAMAccountName","distinguishedName","operatingSystem",
                  "operatingSystemVersion","lastLogon","description","dNSHostName"]
-        r = _ldbsearch(_ad_get_domain_dn(), "subtree", attrs, "(objectClass=computer)")
+        r = _ldbsearch(_ad_get_domain_dn(), "sub", attrs, "(objectClass=computer)")
         if r["returncode"] != 0: return {"error": r["stderr"]}
         return {"computers": _parse_ldb_output(r["stdout"])}
 
@@ -1427,8 +1502,13 @@ class LinuxAgent:
             "gpo_link":            lambda p: self._ad_gpos.link_gpo(p["gpo_guid"], p["container_dn"]),
             "gpo_unlink":          lambda p: self._ad_gpos.unlink_gpo(p["gpo_guid"], p["container_dn"]),
             "gpo_linked":          lambda p: self._ad_gpos.get_linked_gpos(p["container_dn"]),
+            "gpo_get_links":       lambda p: self._ad_gpos.get_links(p["gpo_guid"]),
             "gpo_set_security":    lambda p: self._ad_gpos.set_security_setting(
                                        p["gpo_guid"], p["section"], p["key"], p["value"]),
+            "gpo_read_file":       lambda p: self._ad_gpos.read_file(p["gpo_guid"], p["rel_path"]),
+            "gpo_write_file":      lambda p: self._ad_gpos.write_file(p["gpo_guid"], p["rel_path"], p["content"]),
+            "gpo_list_files":      lambda p: self._ad_gpos.list_files(p["gpo_guid"]),
+            "gpo_rename":          lambda p: self._ad_gpos.rename(p["gpo_guid"], p["new_name"]),
             "share_list":          lambda p: self._ad_shares.list_shares(),
             "share_create":        lambda p: self._ad_shares.create_share(
                                        p["name"], p["path"], p.get("comment",""), p.get("read_only", False)),

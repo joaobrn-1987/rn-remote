@@ -369,7 +369,10 @@
         .ad-modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; z-index:800; backdrop-filter:blur(4px); display:none; }
         .ad-modal-overlay.visible { display:flex; }
         .ad-modal { background:var(--bg-card); border:1px solid var(--border); border-radius:12px; width:520px; max-width:96vw; max-height:90vh; display:flex; flex-direction:column; box-shadow:0 16px 48px rgba(0,0,0,.18); }
-        .ad-modal-wide { width:680px; }
+        .ad-modal-wide { width:680px; height:600px; }
+        .ad-modal-wide .ad-modal-body { height:460px; overflow-y:auto; }
+        .ad-tab-content { display:none; }
+        .ad-tab-content.active { display:block; }
         .ad-modal-header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border); flex-shrink:0; }
         .ad-modal-title { font-size:15px; font-weight:700; color:var(--text-bright); }
         .ad-modal-close { background:none; border:none; color:var(--text-dim); font-size:20px; cursor:pointer; padding:0 4px; line-height:1; transition:color .15s; }
@@ -381,9 +384,6 @@
         .ad-modal-tab { padding:7px 14px; font-size:13px; cursor:pointer; color:var(--text-dim); border-bottom:2px solid transparent; transition:all .15s; }
         .ad-modal-tab:hover { color:var(--text); }
         .ad-modal-tab.active { color:var(--accent); border-bottom-color:var(--accent); font-weight:600; }
-        .ad-tab-content { display:none; }
-        .ad-tab-content.active { display:block; }
-
         .ad-field { margin-bottom:12px; }
         .ad-field label { display:block; font-size:11px; font-weight:600; color:var(--text-dim); margin-bottom:5px; text-transform:uppercase; letter-spacing:.7px; }
         .ad-field input, .ad-field select, .ad-field textarea { width:100%; padding:7px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:7px; color:var(--text); font-size:13px; outline:none; transition:border-color .2s; }
@@ -665,14 +665,6 @@
         </div>
         <!-- Toolbar -->
         <div class="ad-toolbar">
-            <button class="ad-tb-btn" onclick="adAction('create')">&#10010; Novo</button>
-            <button class="ad-tb-btn" onclick="adAction('delete')">&#128465; Excluir</button>
-            <button class="ad-tb-btn" onclick="adAction('properties')">&#9881; Propriedades</button>
-            <div class="ad-tb-sep"></div>
-            <button class="ad-tb-btn" onclick="adAction('enable')">&#10003; Habilitar</button>
-            <button class="ad-tb-btn" onclick="adAction('disable')">&#10007; Desabilitar</button>
-            <button class="ad-tb-btn" onclick="adAction('resetpw')">&#128273; Resetar Senha</button>
-            <div class="ad-tb-sep"></div>
             <button class="ad-tb-btn" onclick="adRefresh()">&#8635; Atualizar</button>
             <div class="ad-breadcrumb" id="adBreadcrumb">Active Directory</div>
         </div>
@@ -688,7 +680,7 @@
                     <span class="ad-detail-count" id="adDetailCount"></span>
                     <input type="text" class="ad-search" id="adSearch" placeholder="Filtrar..." oninput="adFilterObjects()">
                 </div>
-                <div class="ad-list-container" id="adListContainer">
+                <div class="ad-list-container" id="adListContainer" oncontextmenu="adListEmptyContext(event)">
                     <div class="ad-empty">Selecione um container na árvore</div>
                 </div>
             </div>
@@ -777,53 +769,102 @@
     <div class="ad-modal-body">
       <div class="ad-modal-tabs">
         <div class="ad-modal-tab active" onclick="adUserTab('general')">Geral</div>
+        <div class="ad-modal-tab" onclick="adUserTab('address')">Endereço</div>
         <div class="ad-modal-tab" onclick="adUserTab('account')">Conta</div>
         <div class="ad-modal-tab" onclick="adUserTab('profile')">Perfil</div>
+        <div class="ad-modal-tab" onclick="adUserTab('telephones')">Telefones</div>
+        <div class="ad-modal-tab" onclick="adUserTab('organization')">Organização</div>
         <div class="ad-modal-tab" onclick="adUserTab('groups')">Membro De</div>
         <div class="ad-modal-tab" onclick="adUserTab('unix')">Unix</div>
       </div>
       <!-- Geral -->
       <div class="ad-tab-content active" id="adUserTab-general">
         <div class="ad-field-row">
-          <div class="ad-field"><label>Nome</label><input type="text" id="adU-givenName" placeholder="Nome"></div>
-          <div class="ad-field"><label>Sobrenome</label><input type="text" id="adU-sn" placeholder="Sobrenome"></div>
+          <div class="ad-field" style="flex:2"><label>Nome</label><input type="text" id="adU-givenName" placeholder="Nome"></div>
+          <div class="ad-field" style="flex:1"><label>Iniciais</label><input type="text" id="adU-initials" maxlength="6" placeholder="AB"></div>
+          <div class="ad-field" style="flex:2"><label>Sobrenome</label><input type="text" id="adU-sn" placeholder="Sobrenome"></div>
         </div>
         <div class="ad-field"><label>Nome de exibição</label><input type="text" id="adU-displayName"></div>
         <div class="ad-field"><label>Descrição</label><input type="text" id="adU-description"></div>
         <div class="ad-field"><label>Escritório</label><input type="text" id="adU-physicalDeliveryOfficeName"></div>
-        <div class="ad-field"><label>Telefone</label><input type="text" id="adU-telephoneNumber"></div>
-        <div class="ad-field"><label>E-mail</label><input type="text" id="adU-mail"></div>
         <div class="ad-field-row">
-          <div class="ad-field"><label>Cargo</label><input type="text" id="adU-title"></div>
-          <div class="ad-field"><label>Departamento</label><input type="text" id="adU-department"></div>
+          <div class="ad-field"><label>Telefone</label><input type="text" id="adU-telephoneNumber"></div>
         </div>
-        <div class="ad-field"><label>Empresa</label><input type="text" id="adU-company"></div>
+        <div class="ad-field"><label>E-mail</label><input type="text" id="adU-mail"></div>
+        <div class="ad-field"><label>Página Web</label><input type="text" id="adU-wWWHomePage" placeholder="https://"></div>
+      </div>
+      <!-- Endereço -->
+      <div class="ad-tab-content" id="adUserTab-address">
+        <div class="ad-field"><label>Rua / Endereço</label><textarea id="adU-streetAddress" rows="3" style="width:100%;resize:vertical;font-size:13px;padding:4px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text)"></textarea></div>
+        <div class="ad-field"><label>Caixa Postal (P.O. Box)</label><input type="text" id="adU-postOfficeBox"></div>
+        <div class="ad-field-row">
+          <div class="ad-field" style="flex:2"><label>Cidade</label><input type="text" id="adU-l"></div>
+          <div class="ad-field" style="flex:1"><label>Estado</label><input type="text" id="adU-st"></div>
+        </div>
+        <div class="ad-field-row">
+          <div class="ad-field" style="flex:1"><label>CEP</label><input type="text" id="adU-postalCode"></div>
+          <div class="ad-field" style="flex:2"><label>País/Região</label><input type="text" id="adU-co" placeholder="Brasil"></div>
+        </div>
       </div>
       <!-- Conta -->
       <div class="ad-tab-content" id="adUserTab-account">
-        <div class="ad-field"><label>Nome de logon (sAMAccountName)</label><input type="text" id="adU-sAMAccountName"></div>
-        <div class="ad-field"><label>UPN (userPrincipalName)</label><input type="text" id="adU-userPrincipalName"></div>
+        <div class="ad-field"><label>Nome de logon do usuário (UPN)</label><input type="text" id="adU-userPrincipalName" placeholder="usuario@dominio.local"></div>
+        <div class="ad-field"><label>Nome de logon pré-Windows 2000</label><input type="text" id="adU-sAMAccountName"></div>
+        <div class="ad-field-sep"></div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Opções de conta:</div>
+        <div class="ad-field-check"><input type="checkbox" id="adU-mustChangePwd"><label for="adU-mustChangePwd">O usuário deve alterar a senha no próximo logon</label></div>
+        <div class="ad-field-check"><input type="checkbox" id="adU-cannotChangePwd"><label for="adU-cannotChangePwd">O usuário não pode alterar a senha</label></div>
+        <div class="ad-field-check"><input type="checkbox" id="adU-pwdNeverExpires"><label for="adU-pwdNeverExpires">A senha nunca expira</label></div>
+        <div class="ad-field-check"><input type="checkbox" id="adU-pwdNotRequired"><label for="adU-pwdNotRequired">Armazenar senha com criptografia reversível</label></div>
         <div class="ad-field-sep"></div>
         <div class="ad-field-check"><input type="checkbox" id="adU-enabled"><label for="adU-enabled">Conta habilitada</label></div>
-        <div class="ad-field-check"><input type="checkbox" id="adU-pwdNeverExpires"><label for="adU-pwdNeverExpires">Senha nunca expira</label></div>
-        <div class="ad-field-check"><input type="checkbox" id="adU-pwdNotRequired"><label for="adU-pwdNotRequired">Senha não obrigatória</label></div>
+        <div class="ad-field-check" id="adU-lockedRow"><input type="checkbox" id="adU-locked" disabled><label for="adU-locked" id="adU-lockedLabel">Conta bloqueada</label></div>
       </div>
       <!-- Perfil -->
       <div class="ad-tab-content" id="adUserTab-profile">
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Perfil de usuário</div>
         <div class="ad-field"><label>Caminho do perfil</label><input type="text" id="adU-profilePath" placeholder="\\\\server\\profiles\\%username%"></div>
         <div class="ad-field"><label>Script de logon</label><input type="text" id="adU-scriptPath" placeholder="logon.bat"></div>
         <div class="ad-field-sep"></div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Pasta base</div>
         <div class="ad-field-row">
-          <div class="ad-field"><label>Diretório home</label><input type="text" id="adU-homeDirectory" placeholder="\\\\server\\home\\%username%"></div>
-          <div class="ad-field"><label>Drive</label>
-            <select id="adU-homeDrive">
+          <div class="ad-field" style="flex:3"><label>Caminho local / Conectar a</label><input type="text" id="adU-homeDirectory" placeholder="\\\\server\\home\\%username%"></div>
+          <div class="ad-field" style="flex:1"><label>Drive</label>
+            <select id="adU-homeDrive" style="width:100%">
               <option value="">(nenhum)</option>
-              <option value="H:">H:</option><option value="I:">I:</option>
-              <option value="J:">J:</option><option value="K:">K:</option>
-              <option value="Z:">Z:</option>
+              <option value="C:">C:</option><option value="D:">D:</option>
+              <option value="E:">E:</option><option value="F:">F:</option>
+              <option value="G:">G:</option><option value="H:">H:</option>
+              <option value="I:">I:</option><option value="J:">J:</option>
+              <option value="K:">K:</option><option value="L:">L:</option>
+              <option value="M:">M:</option><option value="N:">N:</option>
+              <option value="O:">O:</option><option value="P:">P:</option>
+              <option value="Q:">Q:</option><option value="R:">R:</option>
+              <option value="S:">S:</option><option value="T:">T:</option>
+              <option value="U:">U:</option><option value="V:">V:</option>
+              <option value="W:">W:</option><option value="X:">X:</option>
+              <option value="Y:">Y:</option><option value="Z:">Z:</option>
             </select>
           </div>
         </div>
+      </div>
+      <!-- Telefones -->
+      <div class="ad-tab-content" id="adUserTab-telephones">
+        <div class="ad-field"><label>Residência</label><input type="text" id="adU-homePhone"></div>
+        <div class="ad-field"><label>Pager</label><input type="text" id="adU-pager"></div>
+        <div class="ad-field"><label>Celular</label><input type="text" id="adU-mobile"></div>
+        <div class="ad-field"><label>Fax</label><input type="text" id="adU-facsimileTelephoneNumber"></div>
+        <div class="ad-field"><label>Telefone IP</label><input type="text" id="adU-ipPhone"></div>
+        <div class="ad-field-sep"></div>
+        <div class="ad-field"><label>Anotações</label><textarea id="adU-info" rows="4" style="width:100%;resize:vertical;font-size:13px;padding:4px;border:1px solid var(--border);border-radius:4px;background:var(--bg);color:var(--text)"></textarea></div>
+      </div>
+      <!-- Organização -->
+      <div class="ad-tab-content" id="adUserTab-organization">
+        <div class="ad-field"><label>Cargo</label><input type="text" id="adU-title"></div>
+        <div class="ad-field"><label>Departamento</label><input type="text" id="adU-department"></div>
+        <div class="ad-field"><label>Empresa</label><input type="text" id="adU-company"></div>
+        <div class="ad-field-sep"></div>
+        <div class="ad-field"><label>Gerente (CN ou DN)</label><input type="text" id="adU-manager" placeholder="Nome do gerente"></div>
       </div>
       <!-- Membro De -->
       <div class="ad-tab-content" id="adUserTab-groups">
@@ -943,7 +984,7 @@
       <div class="ad-field"><label>Nome de logon (sAMAccountName)</label><input type="text" id="adNew-username"></div>
       <div class="ad-field"><label>E-mail</label><input type="text" id="adNew-mail"></div>
       <div class="ad-field"><label>Senha</label><input type="password" id="adNew-password"></div>
-      <div class="ad-field"><label>OU destino (deixe em branco para padrão)</label><input type="text" id="adNew-ou" placeholder="OU=Users,DC=dominio,DC=local"></div>
+      <input type="hidden" id="adNew-ou">
       <div class="ad-field-check"><input type="checkbox" id="adNew-mustChange" checked><label for="adNew-mustChange">Deve alterar senha no próximo login</label></div>
     </div>
     <div class="ad-modal-footer">
@@ -971,7 +1012,7 @@
           <select id="adNG-type"><option value="Security">Segurança</option><option value="Distribution">Distribuição</option></select>
         </div>
       </div>
-      <div class="ad-field"><label>OU destino (opcional)</label><input type="text" id="adNG-ou"></div>
+      <input type="hidden" id="adNG-ou">
     </div>
     <div class="ad-modal-footer">
       <button class="ad-btn-secondary" onclick="adCloseModal('adNewGroupModal')">Cancelar</button>
@@ -993,6 +1034,95 @@
     <div class="ad-modal-footer">
       <button class="ad-btn-secondary" onclick="adCloseModal('adNewGPOModal')">Cancelar</button>
       <button class="ad-btn-primary" onclick="adCreateGPO()">Criar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal Propriedades GPO ────────────────────────── -->
+<div class="ad-modal-overlay" id="adGPOModal">
+  <div class="ad-modal" style="max-width:640px;width:95%">
+    <div class="ad-modal-header">
+      <span class="ad-modal-title" id="adGPO-title">Propriedades da GPO</span>
+      <button class="ad-modal-close" onclick="adCloseModal('adGPOModal')">&#10005;</button>
+    </div>
+    <div class="ad-modal-tabs" id="adGPOTabs">
+      <div class="ad-modal-tab active" onclick="adGPOTab('general')">Geral</div>
+      <div class="ad-modal-tab" onclick="adGPOTab('links')">Vínculos</div>
+      <div class="ad-modal-tab" onclick="adGPOTab('drives')">Pastas de Rede</div>
+      <div class="ad-modal-tab" onclick="adGPOTab('scripts')">Scripts</div>
+      <div class="ad-modal-tab" onclick="adGPOTab('security')">Segurança</div>
+    </div>
+    <div class="ad-modal-body" style="min-height:280px">
+      <!-- Tab Geral -->
+      <div id="adGPOTab-general">
+        <div class="ad-field"><label>Nome</label>
+          <div style="display:flex;gap:6px">
+            <input type="text" id="adGPO-name" style="flex:1">
+            <button class="ad-btn-secondary ad-btn-sm" onclick="adRenameGPO()">Renomear</button>
+          </div>
+        </div>
+        <div class="ad-field"><label>GUID</label><input type="text" id="adGPO-guid" readonly style="font-family:monospace;font-size:12px;background:var(--bg-alt)"></div>
+        <div class="ad-field"><label>Versão</label><input type="text" id="adGPO-version" readonly style="background:var(--bg-alt)"></div>
+        <div class="ad-field"><label>Caminho SYSVOL</label><input type="text" id="adGPO-path" readonly style="font-size:11px;background:var(--bg-alt)"></div>
+        <div class="ad-field"><label>OUs Vinculadas</label><div id="adGPO-linksSummary" style="font-size:12px;color:var(--text-dim);padding:4px 0">—</div></div>
+      </div>
+      <!-- Tab Vínculos -->
+      <div id="adGPOTab-links" style="display:none">
+        <div style="display:flex;gap:6px;margin-bottom:10px">
+          <input type="text" id="adGPO-linkDN" placeholder="DN da OU (ex: OU=ALUNOS,DC=escola,...)" style="flex:1;font-size:12px">
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adAddGPOLink()">+ Vincular</button>
+        </div>
+        <div id="adGPO-linksList"><div class="ad-loading">&#9203; Carregando...</div></div>
+      </div>
+      <!-- Tab Pastas de Rede -->
+      <div id="adGPOTab-drives" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span style="font-size:12px;color:var(--text-dim)">Mapeamentos de unidade (Drives.xml)</span>
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adAddGPODriveRow()">+ Adicionar</button>
+        </div>
+        <div id="adGPO-drivesList"></div>
+        <div style="margin-top:10px;text-align:right">
+          <button class="ad-btn-primary ad-btn-sm" onclick="adSaveGPODrives()">Salvar Mapeamentos</button>
+        </div>
+      </div>
+      <!-- Tab Scripts -->
+      <div id="adGPOTab-scripts" style="display:none">
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;font-size:12px;margin-bottom:6px;color:var(--text-dim)">LOGON (Usuário)</div>
+          <div id="adGPO-logonScripts"></div>
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adAddGPOScript('logon')" style="margin-top:4px">+ Script de Logon</button>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;font-size:12px;margin-bottom:6px;color:var(--text-dim)">LOGOFF (Usuário)</div>
+          <div id="adGPO-logoffScripts"></div>
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adAddGPOScript('logoff')" style="margin-top:4px">+ Script de Logoff</button>
+        </div>
+        <div style="margin-bottom:12px">
+          <div style="font-weight:600;font-size:12px;margin-bottom:6px;color:var(--text-dim)">STARTUP (Máquina)</div>
+          <div id="adGPO-startupScripts"></div>
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adAddGPOScript('startup')" style="margin-top:4px">+ Script de Startup</button>
+        </div>
+        <div>
+          <div style="font-weight:600;font-size:12px;margin-bottom:6px;color:var(--text-dim)">SHUTDOWN (Máquina)</div>
+          <div id="adGPO-shutdownScripts"></div>
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adAddGPOScript('shutdown')" style="margin-top:4px">+ Script de Shutdown</button>
+        </div>
+        <div style="margin-top:10px;text-align:right">
+          <button class="ad-btn-primary ad-btn-sm" onclick="adSaveGPOScripts()">Salvar Scripts</button>
+        </div>
+      </div>
+      <!-- Tab Segurança -->
+      <div id="adGPOTab-security" style="display:none">
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">GptTmpl.inf — configurações de segurança da máquina</div>
+        <textarea id="adGPO-secContent" style="width:100%;height:220px;font-family:monospace;font-size:11px;background:var(--bg-alt);border:1px solid var(--border);color:var(--text);padding:8px;box-sizing:border-box;resize:vertical"></textarea>
+        <div style="margin-top:6px;text-align:right">
+          <button class="ad-btn-primary ad-btn-sm" onclick="adSaveGPOSecurity()">Salvar Segurança</button>
+        </div>
+      </div>
+    </div>
+    <div class="ad-modal-footer">
+      <button class="ad-btn-danger ad-btn-sm" onclick="adDeleteGPOFromModal()" style="margin-right:auto">&#128465; Excluir GPO</button>
+      <button class="ad-btn-secondary" onclick="adCloseModal('adGPOModal')">Fechar</button>
     </div>
   </div>
 </div>
@@ -2639,48 +2769,75 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
         const container = document.getElementById('adTree');
         container.innerHTML = '';
         if (!AD.tree) return;
-        const rootNode = adCreateTreeNode(AD.tree, 0);
-        container.appendChild(rootNode);
-        if (AD.tree.children && AD.tree.children.length) {
-            adRenderTreeChildren(container, AD.tree.children, 1);
-        }
+        if (!AD.expanded) AD.expanded = new Set();
+        // Expand root by default
+        AD.expanded.add(AD.tree.dn);
+        container.appendChild(adBuildTreeNode(AD.tree, 0));
     }
 
-    function adRenderTreeChildren(container, children, depth) {
-        for (const child of children) {
-            const node = adCreateTreeNode(child, depth);
-            container.appendChild(node);
-            if (child.children && child.children.length) {
-                adRenderTreeChildren(container, child.children, depth + 1);
-            }
-        }
-    }
-
-    function adCreateTreeNode(node, depth) {
+    function adBuildTreeNode(node, depth) {
         const icons = { domain:'&#127968;', ou:'&#128452;', container:'&#128193;', builtin:'&#9874;' };
         const icon = icons[node.type] || '&#128452;';
         const hasChildren = node.children && node.children.length > 0;
+        const expanded = AD.expanded && AD.expanded.has(node.dn);
 
-        const div = document.createElement('div');
-        div.className = 'ad-tree-node';
-        div.style.setProperty('--depth', depth);
-        div.dataset.dn = node.dn;
-        div.innerHTML =
-            '<span class="ad-tree-toggle">' + (hasChildren ? '&#9658;' : '&#160;') + '</span>' +
+        const wrapper = document.createElement('div');
+
+        const row = document.createElement('div');
+        row.className = 'ad-tree-node';
+        row.style.setProperty('--depth', depth);
+        row.dataset.dn = node.dn;
+        row.innerHTML =
+            '<span class="ad-tree-toggle">' + (hasChildren ? (expanded ? '&#9660;' : '&#9658;') : '&#160;') + '</span>' +
             '<span class="ad-tree-icon">' + icon + '</span>' +
             '<span class="ad-tree-label" title="' + escapeHtml(node.dn) + '">' + escapeHtml(node.name) + '</span>';
 
-        div.addEventListener('click', (e) => {
+        const toggle = row.querySelector('.ad-tree-toggle');
+
+        if (hasChildren) {
+            const childContainer = document.createElement('div');
+            childContainer.className = 'ad-tree-children';
+            childContainer.style.display = expanded ? '' : 'none';
+            for (const child of node.children) {
+                childContainer.appendChild(adBuildTreeNode(child, depth + 1));
+            }
+
+            toggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const open = childContainer.style.display !== 'none';
+                childContainer.style.display = open ? 'none' : '';
+                toggle.innerHTML = open ? '&#9658;' : '&#9660;';
+                if (open) AD.expanded.delete(node.dn); else AD.expanded.add(node.dn);
+            });
+
+            wrapper.appendChild(row);
+            wrapper.appendChild(childContainer);
+        } else {
+            wrapper.appendChild(row);
+        }
+
+        row.addEventListener('click', (e) => {
             e.stopPropagation();
             adSelectTreeNode(node.dn, node.name);
         });
 
-        div.addEventListener('contextmenu', (e) => {
+        row.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            if (hasChildren) {
+                const childContainer = wrapper.querySelector('.ad-tree-children');
+                const open = childContainer.style.display !== 'none';
+                childContainer.style.display = open ? 'none' : '';
+                toggle.innerHTML = open ? '&#9658;' : '&#9660;';
+                if (open) AD.expanded.delete(node.dn); else AD.expanded.add(node.dn);
+            }
+        });
+
+        row.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             adShowTreeContext(e, node);
         });
 
-        return div;
+        return wrapper;
     }
 
     function adSelectTreeNode(dn, name) {
@@ -2753,7 +2910,7 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
             const desc = escapeHtml(getStr(obj, 'description'));
             const status = adObjStatusBadge(obj);
             const origIdx = AD.allObjects.indexOf(obj);
-            html += '<tr onclick="adSelectObject(' + origIdx + ',event)" ' +
+            html += '<tr data-idx="' + origIdx + '" onclick="adSelectObject(' + origIdx + ',event)" ' +
                 'ondblclick="adObjectProperties(' + origIdx + ')" ' +
                 'oncontextmenu="adShowObjectContext(event,' + origIdx + ')">' +
                 '<td><span class="ad-obj-icon">' + icon + '</span>' +
@@ -2794,8 +2951,8 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
         } else {
             AD.selectedObjects = [idx];
         }
-        document.querySelectorAll('.ad-list-table tbody tr').forEach((row, i) => {
-            row.classList.toggle('selected', AD.selectedObjects.includes(i));
+        document.querySelectorAll('.ad-list-table tbody tr').forEach(row => {
+            row.classList.toggle('selected', AD.selectedObjects.includes(Number(row.dataset.idx)));
         });
     };
 
@@ -2807,12 +2964,27 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
         } else if (obj._type === 'group') {
             adOpenGroupProperties(getStr(obj, 'sAMAccountName'));
         } else if (obj._type === 'ou') {
-            document.getElementById('adOU-name').value = getStr(obj, 'ou') || getStr(obj, 'cn');
-            document.getElementById('adOU-description').value = getStr(obj, 'description');
-            document.getElementById('adOU-parent').value = getStr(obj, 'dn').split(',').slice(1).join(',');
-            showModal('adOUModal');
+            const dn = getStr(obj, 'dn');
+            const name = getStr(obj, 'ou') || getStr(obj, 'cn') || dn;
+            adNavigateToOU(dn, name);
         }
     };
+
+    function adNavigateToOU(dn, name) {
+        AD.expanded = AD.expanded || new Set();
+        AD.expanded.add(dn);
+        const treeRow = document.querySelector('.ad-tree-node[data-dn="' + dn.replace(/\\/g,'\\\\').replace(/"/g,'\\"') + '"]');
+        if (treeRow) {
+            const wrapper = treeRow.parentElement;
+            const childContainer = wrapper.querySelector('.ad-tree-children');
+            const toggle = treeRow.querySelector('.ad-tree-toggle');
+            if (childContainer && childContainer.style.display === 'none') {
+                childContainer.style.display = '';
+                if (toggle) toggle.innerHTML = '&#9660;';
+            }
+        }
+        adSelectTreeNode(dn, name);
+    }
 
     window.adFilterObjects = function() { adRenderObjects(AD.allObjects); };
 
@@ -2889,9 +3061,9 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
     }
 
     function adToggleSelected(enable) {
-        if (!AD.selectedObjects.length) return;
+        if (!AD.selectedObjects.length) { alert('Selecione um usuário primeiro.'); return; }
         const obj = AD.allObjects[AD.selectedObjects[0]];
-        if (!obj || obj._type !== 'user') return;
+        if (!obj || obj._type !== 'user') { alert('Selecione um usuário.'); return; }
         const username = getStr(obj, 'sAMAccountName');
         const action = enable ? 'user_enable' : 'user_disable';
         adSendRequest(action, { username }, (r) => {
@@ -2914,14 +3086,11 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
     window.adShowObjectContext = function(event, idx) {
         event.preventDefault();
         AD.selectedObjects = [idx];
-        document.querySelectorAll('.ad-list-table tbody tr').forEach((row, i) => {
-            row.classList.toggle('selected', i === idx);
+        document.querySelectorAll('.ad-list-table tbody tr').forEach(row => {
+            row.classList.toggle('selected', Number(row.dataset.idx) === idx);
         });
         const obj = AD.allObjects[idx];
         const isUser = obj && obj._type === 'user';
-        document.getElementById('adCtxEnable').style.display  = isUser ? '' : 'none';
-        document.getElementById('adCtxDisable').style.display = isUser ? '' : 'none';
-        document.getElementById('adCtxReset').style.display   = isUser ? '' : 'none';
         const menu = document.getElementById('adContextMenu');
         menu.innerHTML =
             '<div class="ad-ctx-item" onclick="adContextAction(\'properties\')">&#9881; Propriedades</div>' +
@@ -2937,12 +3106,13 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
     };
 
     function adShowTreeContext(event, node) {
+        const dn = node.dn;
         const menu = document.getElementById('adContextMenu');
         menu.innerHTML =
-            '<div class="ad-ctx-item" onclick="adCloseContextMenu();showModal(\'adNewUserModal\')">&#128100; Novo Usuário aqui</div>' +
-            '<div class="ad-ctx-item" onclick="adCloseContextMenu();showModal(\'adNewGroupModal\')">&#128101; Novo Grupo aqui</div>' +
+            '<div class="ad-ctx-item" onclick="adCloseContextMenu();adOpenNewUserInOU(\'' + escapeHtml(dn) + '\')">&#128100; Novo Usuário aqui</div>' +
+            '<div class="ad-ctx-item" onclick="adCloseContextMenu();adOpenNewGroupInOU(\'' + escapeHtml(dn) + '\')">&#128101; Novo Grupo aqui</div>' +
             '<div class="ad-ctx-sep"></div>' +
-            '<div class="ad-ctx-item" onclick="adCloseContextMenu();adDeleteOU(\'' + escapeHtml(node.dn) + '\')" style="color:var(--danger)">&#128465; Excluir OU</div>';
+            '<div class="ad-ctx-item" onclick="adCloseContextMenu();adDeleteOU(\'' + escapeHtml(dn) + '\')" style="color:var(--danger)">&#128465; Excluir OU</div>';
         menu.style.left = event.clientX + 'px';
         menu.style.top  = event.clientY + 'px';
         menu.classList.add('visible');
@@ -2951,6 +3121,40 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
     function adCloseContextMenu() {
         document.getElementById('adContextMenu').classList.remove('visible');
     }
+    window.adCloseContextMenu = adCloseContextMenu;
+
+    window.adOpenNewUserInOU = function(dn) {
+        document.getElementById('adNew-givenName').value = '';
+        document.getElementById('adNew-sn').value = '';
+        document.getElementById('adNew-username').value = '';
+        document.getElementById('adNew-mail').value = '';
+        document.getElementById('adNew-password').value = '';
+        document.getElementById('adNew-ou').value = dn;
+        document.getElementById('adNew-mustChange').checked = true;
+        showModal('adNewUserModal');
+    };
+
+    window.adOpenNewGroupInOU = function(dn) {
+        document.getElementById('adNG-name').value = '';
+        document.getElementById('adNG-description').value = '';
+        document.getElementById('adNG-scope').value = 'Global';
+        document.getElementById('adNG-type').value = 'Security';
+        document.getElementById('adNG-ou').value = dn;
+        showModal('adNewGroupModal');
+    };
+
+    window.adListEmptyContext = function(event) {
+        if (event.target.closest('tr')) return; // clicou em um item, ignora
+        event.preventDefault();
+        const ou = AD.selectedNode || '';
+        const menu = document.getElementById('adContextMenu');
+        menu.innerHTML =
+            '<div class="ad-ctx-item" onclick="adCloseContextMenu();adOpenNewUserInOU(\'' + escapeHtml(ou) + '\')">&#128100; Novo Usuário</div>' +
+            '<div class="ad-ctx-item" onclick="adCloseContextMenu();adOpenNewGroupInOU(\'' + escapeHtml(ou) + '\')">&#128101; Novo Grupo</div>';
+        menu.style.left = event.clientX + 'px';
+        menu.style.top  = event.clientY + 'px';
+        menu.classList.add('visible');
+    };
 
     // ─── User Properties ───
 
@@ -2962,26 +3166,52 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
             document.getElementById('adUserModalTitle').textContent = 'Propriedades: ' + AD.editingUser;
             // Geral
             setVal('adU-givenName', getStr(u, 'givenName'));
+            setVal('adU-initials', getStr(u, 'initials'));
             setVal('adU-sn', getStr(u, 'sn'));
             setVal('adU-displayName', getStr(u, 'displayName'));
             setVal('adU-description', getStr(u, 'description'));
             setVal('adU-physicalDeliveryOfficeName', getStr(u, 'physicalDeliveryOfficeName'));
             setVal('adU-telephoneNumber', getStr(u, 'telephoneNumber'));
             setVal('adU-mail', getStr(u, 'mail'));
-            setVal('adU-title', getStr(u, 'title'));
-            setVal('adU-department', getStr(u, 'department'));
-            setVal('adU-company', getStr(u, 'company'));
+            setVal('adU-wWWHomePage', getStr(u, 'wWWHomePage'));
+            // Endereço
+            setVal('adU-streetAddress', getStr(u, 'streetAddress'));
+            setVal('adU-postOfficeBox', getStr(u, 'postOfficeBox'));
+            setVal('adU-l', getStr(u, 'l'));
+            setVal('adU-st', getStr(u, 'st'));
+            setVal('adU-postalCode', getStr(u, 'postalCode'));
+            setVal('adU-co', getStr(u, 'co'));
             // Conta
-            setVal('adU-sAMAccountName', getStr(u, 'sAMAccountName'));
             setVal('adU-userPrincipalName', getStr(u, 'userPrincipalName'));
-            setCheck('adU-enabled', !u._disabled);
+            setVal('adU-sAMAccountName', getStr(u, 'sAMAccountName'));
+            setCheck('adU-mustChangePwd', !!u._mustChangePwd);
+            setCheck('adU-cannotChangePwd', !!u._cannotChangePwd);
             setCheck('adU-pwdNeverExpires', !!u._pwdNeverExpires);
             setCheck('adU-pwdNotRequired', !!u._pwdNotRequired);
+            setCheck('adU-enabled', !u._disabled);
+            const locked = !!u._locked;
+            setCheck('adU-locked', locked);
+            document.getElementById('adU-lockedLabel').textContent =
+                locked ? 'Conta bloqueada (desmarque para desbloquear)' : 'Conta bloqueada';
+            document.getElementById('adU-locked').disabled = !locked;
             // Perfil
             setVal('adU-profilePath', getStr(u, 'profilePath'));
             setVal('adU-scriptPath', getStr(u, 'scriptPath'));
             setVal('adU-homeDirectory', getStr(u, 'homeDirectory'));
             setVal('adU-homeDrive', getStr(u, 'homeDrive'));
+            // Telefones
+            setVal('adU-homePhone', getStr(u, 'homePhone'));
+            setVal('adU-pager', getStr(u, 'pager'));
+            setVal('adU-mobile', getStr(u, 'mobile'));
+            setVal('adU-facsimileTelephoneNumber', getStr(u, 'facsimileTelephoneNumber'));
+            setVal('adU-ipPhone', getStr(u, 'ipPhone'));
+            setVal('adU-info', getStr(u, 'info'));
+            // Organização
+            setVal('adU-title', getStr(u, 'title'));
+            setVal('adU-department', getStr(u, 'department'));
+            setVal('adU-company', getStr(u, 'company'));
+            const mgr = getStr(u, 'manager');
+            setVal('adU-manager', mgr ? (mgr.split(',')[0].replace(/^CN=/i, '')) : '');
             // Membro De
             const memberOf = u.memberOf ? (Array.isArray(u.memberOf) ? u.memberOf : [u.memberOf]) : [];
             document.getElementById('adU-groupsList').innerHTML = memberOf.length
@@ -3002,9 +3232,10 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
     }
 
     window.adUserTab = function(tab) {
-        document.querySelectorAll('#adUserModal .ad-modal-tab').forEach((t, i) => {
-            const tabs = ['general','account','profile','groups','unix'];
-            t.classList.toggle('active', tabs[i] === tab);
+        document.querySelectorAll('#adUserModal .ad-modal-tab').forEach(t => {
+            t.classList.toggle('active', t.textContent.trim() ===
+                ({general:'Geral',address:'Endereço',account:'Conta',profile:'Perfil',
+                  telephones:'Telefones',organization:'Organização',groups:'Membro De',unix:'Unix'}[tab] || ''));
         });
         document.querySelectorAll('#adUserModal .ad-tab-content').forEach(c => {
             c.classList.toggle('active', c.id === 'adUserTab-' + tab);
@@ -3017,25 +3248,47 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
     function adDoSaveUser(close) {
         if (!AD.editingUser) return;
         const attrs = {
+            // Geral
+            givenName:                    getVal('adU-givenName'),
+            initials:                     getVal('adU-initials'),
+            sn:                           getVal('adU-sn'),
             displayName:                  getVal('adU-displayName'),
             description:                  getVal('adU-description'),
+            physicalDeliveryOfficeName:   getVal('adU-physicalDeliveryOfficeName'),
             telephoneNumber:              getVal('adU-telephoneNumber'),
             mail:                         getVal('adU-mail'),
-            title:                        getVal('adU-title'),
-            department:                   getVal('adU-department'),
-            company:                      getVal('adU-company'),
-            physicalDeliveryOfficeName:   getVal('adU-physicalDeliveryOfficeName'),
+            wWWHomePage:                  getVal('adU-wWWHomePage'),
+            // Endereço
+            streetAddress:                getVal('adU-streetAddress'),
+            postOfficeBox:                getVal('adU-postOfficeBox'),
+            l:                            getVal('adU-l'),
+            st:                           getVal('adU-st'),
+            postalCode:                   getVal('adU-postalCode'),
+            co:                           getVal('adU-co'),
+            // Perfil
             profilePath:                  getVal('adU-profilePath'),
             scriptPath:                   getVal('adU-scriptPath'),
             homeDirectory:                getVal('adU-homeDirectory'),
             homeDrive:                    getVal('adU-homeDrive'),
+            // Telefones
+            homePhone:                    getVal('adU-homePhone'),
+            pager:                        getVal('adU-pager'),
+            mobile:                       getVal('adU-mobile'),
+            facsimileTelephoneNumber:     getVal('adU-facsimileTelephoneNumber'),
+            ipPhone:                      getVal('adU-ipPhone'),
+            info:                         getVal('adU-info'),
+            // Organização
+            title:                        getVal('adU-title'),
+            department:                   getVal('adU-department'),
+            company:                      getVal('adU-company'),
+            // Unix
             uidNumber:                    getVal('adU-uidNumber'),
             gidNumber:                    getVal('adU-gidNumber'),
             loginShell:                   getVal('adU-loginShell'),
             unixHomeDirectory:            getVal('adU-unixHomeDirectory'),
         };
-        // Remove empty
-        Object.keys(attrs).forEach(k => { if (!attrs[k]) delete attrs[k]; });
+        // Remove empty strings (keep null to delete)
+        Object.keys(attrs).forEach(k => { if (attrs[k] === '') delete attrs[k]; });
         adSendRequest('user_modify', { username: AD.editingUser, attrs }, (r) => {
             if (r && r.ok) {
                 if (close) adCloseModal('adUserModal');
@@ -3247,18 +3500,374 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
                 document.getElementById('adListContainer').innerHTML = '<div class="ad-empty">Nenhuma GPO</div>';
                 return;
             }
-            let html = '<table class="ad-list-table"><thead><tr><th>Nome</th><th>GUID</th><th>Status</th></tr></thead><tbody>';
+            let html = '<table class="ad-list-table"><thead><tr><th>Nome</th><th>GUID</th><th>Versão</th></tr></thead><tbody>';
             gpos.forEach(g => {
                 const name = escapeHtml(g['Display name'] || g['GPO'] || 'GPO');
-                const guid = escapeHtml(g['GUID'] || g['Path'] || '');
-                html += '<tr><td><span class="ad-obj-icon">&#128196;</span><span class="ad-obj-name">' + name + '</span></td>' +
+                const guid = escapeHtml(g['GPO'] || '');
+                const version = escapeHtml(g['version'] || '');
+                const safeName = (g['Display name'] || g['GPO'] || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+                html += '<tr style="cursor:pointer" ' +
+                    'onclick="adSelectGPO(this,\'' + guid.replace(/'/g,"\\'") + '\',\'' + safeName + '\')" ' +
+                    'ondblclick="adOpenGPOProps(\'' + guid.replace(/'/g,"\\'") + '\',\'' + safeName + '\')">' +
+                    '<td><span class="ad-obj-icon">&#128196;</span><span class="ad-obj-name">' + name + '</span></td>' +
                     '<td style="font-size:11px;font-family:monospace;color:var(--text-dim)">' + guid + '</td>' +
-                    '<td><span class="ad-badge ad-badge-enabled">Ativo</span></td></tr>';
+                    '<td style="font-size:11px;color:var(--text-dim)">' + version + '</td></tr>';
             });
             html += '</tbody></table>';
             document.getElementById('adListContainer').innerHTML = html;
         });
     }
+
+    // ─── GPO: seleção e propriedades ───
+
+    window.adSelectGPO = function(row, guid, name) {
+        document.querySelectorAll('#adListContainer tr').forEach(r => r.classList.remove('selected'));
+        row.classList.add('selected');
+        AD.selectedGPO = { guid, name };
+    };
+
+    window.adOpenGPOProps = function(guid, name) {
+        AD.selectedGPO = { guid, name };
+        AD.gpoScripts = { logon: [], logoff: [], startup: [], shutdown: [] };
+        document.getElementById('adGPO-title').textContent = name || guid;
+        document.getElementById('adGPO-name').value = name || '';
+        document.getElementById('adGPO-guid').value = guid;
+        document.getElementById('adGPO-version').value = '…';
+        document.getElementById('adGPO-path').value = '…';
+        document.getElementById('adGPO-linksSummary').textContent = '…';
+        adGPOTab('general');
+        showModal('adGPOModal');
+        // Carrega detalhes
+        adSendRequest('gpo_get', { gpo_guid: guid }, (r) => {
+            if (r && r.gpo) {
+                const g = r.gpo;
+                document.getElementById('adGPO-version').value = g.version || '—';
+                document.getElementById('adGPO-path').value = g.path || '—';
+                if (g.gpt_tmpl) document.getElementById('adGPO-secContent').value = g.gpt_tmpl;
+            }
+        });
+        adSendRequest('gpo_get_links', { gpo_guid: guid }, (r) => {
+            const links = (r && r.links) || [];
+            document.getElementById('adGPO-linksSummary').textContent =
+                links.length ? links.map(l => l.name).join(', ') : 'Nenhuma OU vinculada';
+            adRenderGPOLinks(links, guid);
+        });
+        adLoadGPODrives(guid);
+        adLoadGPOScripts(guid);
+    };
+
+    function adGPOTabEl(name) {
+        const tabs = document.querySelectorAll('#adGPOTabs .ad-modal-tab');
+        const panels = ['general','links','drives','scripts','security'];
+        tabs.forEach((t, i) => {
+            const active = panels[i] === name;
+            t.classList.toggle('active', active);
+            document.getElementById('adGPOTab-' + panels[i]).style.display = active ? '' : 'none';
+        });
+    }
+    window.adGPOTab = adGPOTabEl;
+
+    // ─── GPO: Renomear ───
+    window.adRenameGPO = function() {
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        const newName = document.getElementById('adGPO-name').value.trim();
+        if (!guid || !newName) return;
+        adSendRequest('gpo_rename', { gpo_guid: guid, new_name: newName }, (r) => {
+            if (r && r.ok) { document.getElementById('adGPO-title').textContent = newName; adLoadGPOs(); }
+            else alert('Erro: ' + ((r && r.output) || 'falha'));
+        });
+    };
+
+    // ─── GPO: Excluir ───
+    window.adDeleteGPOFromModal = function() {
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        const name = AD.selectedGPO && AD.selectedGPO.name;
+        if (!guid) return;
+        if (!confirm('Excluir GPO "' + name + '"? Esta ação não pode ser desfeita.')) return;
+        adSendRequest('gpo_delete', { gpo_guid: guid }, (r) => {
+            if (r && r.ok) { adCloseModal('adGPOModal'); adLoadGPOs(); }
+            else alert('Erro: ' + ((r && r.output) || 'falha'));
+        });
+    };
+
+    // ─── GPO: Vínculos ───
+    function adRenderGPOLinks(links, guid) {
+        const el = document.getElementById('adGPO-linksList');
+        if (!links.length) { el.innerHTML = '<div class="ad-empty">Nenhuma OU vinculada</div>'; return; }
+        let html = '<table class="ad-list-table"><thead><tr><th>OU</th><th></th></tr></thead><tbody>';
+        links.forEach(l => {
+            html += '<tr><td style="font-size:12px">' + escapeHtml(l.dn) + '</td>' +
+                '<td><button class="ad-btn-danger ad-btn-sm" onclick="adRemoveGPOLink(\'' +
+                escapeHtml(l.dn).replace(/'/g,"\\'") + '\')">Remover</button></td></tr>';
+        });
+        el.innerHTML = html + '</tbody></table>';
+    }
+
+    window.adAddGPOLink = function() {
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        const dn = document.getElementById('adGPO-linkDN').value.trim();
+        if (!guid || !dn) return;
+        adSendRequest('gpo_link', { gpo_guid: guid, container_dn: dn }, (r) => {
+            if (r && r.ok) {
+                document.getElementById('adGPO-linkDN').value = '';
+                adSendRequest('gpo_get_links', { gpo_guid: guid }, (r2) => {
+                    adRenderGPOLinks((r2 && r2.links) || [], guid);
+                });
+            } else alert('Erro: ' + ((r && r.output) || 'falha'));
+        });
+    };
+
+    window.adRemoveGPOLink = function(dn) {
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        if (!guid) return;
+        adSendRequest('gpo_unlink', { gpo_guid: guid, container_dn: dn }, (r) => {
+            if (r && r.ok) {
+                adSendRequest('gpo_get_links', { gpo_guid: guid }, (r2) => {
+                    adRenderGPOLinks((r2 && r2.links) || [], guid);
+                });
+            } else alert('Erro: ' + ((r && r.output) || 'falha'));
+        });
+    };
+
+    // ─── GPO: Pastas de Rede (Drives.xml) ───
+    const DRIVES_PATH = 'User/Preferences/Drives/Drives.xml';
+
+    function adLoadGPODrives(guid) {
+        adSendRequest('gpo_read_file', { gpo_guid: guid, rel_path: DRIVES_PATH }, (r) => {
+            AD.gpoDrivesXml = (r && r.content) || '';
+            const drives = adParseDrivesXml(AD.gpoDrivesXml);
+            AD.gpoDrives = drives;
+            adRenderGPODrives();
+        });
+    }
+
+    function adParseDrivesXml(xml) {
+        if (!xml.trim()) return [];
+        try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(xml, 'text/xml');
+            const drives = [];
+            doc.querySelectorAll('Drive').forEach(d => {
+                const p = d.querySelector('Properties');
+                if (!p) return;
+                drives.push({
+                    uid:    d.getAttribute('uid') || adNewGuid(),
+                    letter: p.getAttribute('letter') || '',
+                    path:   p.getAttribute('path') || '',
+                    label:  p.getAttribute('label') || '',
+                    action: p.getAttribute('action') || 'U',
+                    persistent: p.getAttribute('persistent') || '1',
+                });
+            });
+            return drives;
+        } catch(e) { return []; }
+    }
+
+    function adBuildDrivesXml(drives) {
+        const now = new Date().toISOString().replace('T',' ').substring(0,19);
+        let xml = '<?xml version="1.0" encoding="utf-8"?>\r\n' +
+            '<Drives clsid="{8FDDCC1A-0C3C-43cd-A6B4-71A6DF20DA8C}">\r\n';
+        drives.forEach(d => {
+            const letter = d.letter.replace(':','');
+            xml += '\t<Drive clsid="{935D1B74-9CB8-4e3c-9914-7DD559B7A417}"' +
+                ' name="' + letter + ':" status="' + letter + ':"' +
+                ' image="2" changed="' + now + '" uid="' + d.uid + '">\r\n' +
+                '\t\t<Properties action="' + d.action + '"' +
+                ' thisDrive="NOCHANGE" allDrives="NOCHANGE" userName=""' +
+                ' path="' + adXmlEsc(d.path) + '"' +
+                ' label="' + adXmlEsc(d.label) + '"' +
+                ' persistent="' + d.persistent + '" useLetter="1"' +
+                ' letter="' + letter + '"/>\r\n' +
+                '\t</Drive>\r\n';
+        });
+        return xml + '</Drives>';
+    }
+
+    function adXmlEsc(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    function adNewGuid() {
+        return '{' + 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+            const r = Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16).toUpperCase();
+        }) + '}';
+    }
+
+    function adRenderGPODrives() {
+        const el = document.getElementById('adGPO-drivesList');
+        if (!el) return;
+        if (!AD.gpoDrives.length) {
+            el.innerHTML = '<div class="ad-empty" style="margin-bottom:8px">Nenhum mapeamento</div>';
+            return;
+        }
+        let html = '<table class="ad-list-table" style="font-size:12px"><thead><tr>' +
+            '<th>Letra</th><th>Caminho UNC</th><th>Rótulo</th><th>Ação</th><th></th></tr></thead><tbody>';
+        AD.gpoDrives.forEach((d, i) => {
+            html += '<tr>' +
+                '<td><input type="text" value="' + adXmlEsc(d.letter) + '" maxlength="2" style="width:36px;text-align:center" onchange="AD.gpoDrives[' + i + '].letter=this.value"></td>' +
+                '<td><input type="text" value="' + adXmlEsc(d.path) + '" style="width:220px" onchange="AD.gpoDrives[' + i + '].path=this.value"></td>' +
+                '<td><input type="text" value="' + adXmlEsc(d.label) + '" style="width:100px" onchange="AD.gpoDrives[' + i + '].label=this.value"></td>' +
+                '<td><select onchange="AD.gpoDrives[' + i + '].action=this.value">' +
+                    ['U','C','R','D'].map(a => '<option value="' + a + '"' + (d.action===a?' selected':'') + '>' + {U:'Atualizar',C:'Criar',R:'Substituir',D:'Excluir'}[a] + '</option>').join('') +
+                '</select></td>' +
+                '<td><button class="ad-btn-danger ad-btn-sm" onclick="adRemoveGPODriveRow(' + i + ')">&#128465;</button></td>' +
+                '</tr>';
+        });
+        el.innerHTML = html + '</tbody></table>';
+    }
+
+    window.adAddGPODriveRow = function() {
+        AD.gpoDrives = AD.gpoDrives || [];
+        AD.gpoDrives.push({ uid: adNewGuid(), letter: '', path: '', label: '', action: 'U', persistent: '1' });
+        adRenderGPODrives();
+    };
+
+    window.adRemoveGPODriveRow = function(i) {
+        AD.gpoDrives.splice(i, 1);
+        adRenderGPODrives();
+    };
+
+    window.adSaveGPODrives = function() {
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        if (!guid) return;
+        const xml = adBuildDrivesXml(AD.gpoDrives);
+        adSendRequest('gpo_write_file', { gpo_guid: guid, rel_path: DRIVES_PATH, content: xml }, (r) => {
+            if (r && r.ok) alert('Mapeamentos salvos com sucesso!');
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    // ─── GPO: Scripts ───
+    function adScriptPath(type) {
+        return type === 'logon'    ? 'User/Scripts/scripts.ini' :
+               type === 'logoff'   ? 'User/Scripts/scripts.ini' :
+               type === 'startup'  ? 'Machine/Scripts/scripts.ini' :
+                                     'Machine/Scripts/scripts.ini';
+    }
+
+    function adParseScriptsIni(content, section) {
+        const lines = content.split(/\r?\n/);
+        let inSection = false;
+        const scripts = [];
+        const secName = section.toLowerCase();
+        for (const line of lines) {
+            if (line.trim().startsWith('[')) {
+                inSection = line.trim().slice(1,-1).toLowerCase() === secName;
+                continue;
+            }
+            if (inSection) {
+                const m = line.match(/^(\d+)CmdLine=(.*)/i);
+                if (m) {
+                    const idx = parseInt(m[1]);
+                    if (!scripts[idx]) scripts[idx] = { cmdline: '', params: '' };
+                    scripts[idx].cmdline = m[2].trim();
+                }
+                const m2 = line.match(/^(\d+)Parameters=(.*)/i);
+                if (m2) {
+                    const idx = parseInt(m2[1]);
+                    if (!scripts[idx]) scripts[idx] = { cmdline: '', params: '' };
+                    scripts[idx].params = m2[2].trim();
+                }
+            }
+        }
+        return scripts.filter(Boolean);
+    }
+
+    function adBuildScriptsIni(parsed) {
+        // parsed: { logon:[], logoff:[], startup:[], shutdown:[] }
+        // User/Scripts/scripts.ini has [Logon] and [Logoff]
+        // Machine/Scripts/scripts.ini has [Startup] and [Shutdown]
+        const userIni = adBuildScriptsSection('Logon', parsed.logon) +
+                        adBuildScriptsSection('Logoff', parsed.logoff);
+        const machIni = adBuildScriptsSection('Startup', parsed.startup) +
+                        adBuildScriptsSection('Shutdown', parsed.shutdown);
+        return { user: userIni, machine: machIni };
+    }
+
+    function adBuildScriptsSection(name, scripts) {
+        if (!scripts || !scripts.length) return '';
+        let s = '[' + name + ']\r\n';
+        scripts.forEach((sc, i) => {
+            s += i + 'CmdLine=' + (sc.cmdline || '') + '\r\n';
+            s += i + 'Parameters=' + (sc.params || '') + '\r\n';
+        });
+        return s;
+    }
+
+    function adLoadGPOScripts(guid) {
+        // Load both user and machine scripts.ini
+        adSendRequest('gpo_read_file', { gpo_guid: guid, rel_path: 'User/Scripts/scripts.ini' }, (r1) => {
+            adSendRequest('gpo_read_file', { gpo_guid: guid, rel_path: 'Machine/Scripts/scripts.ini' }, (r2) => {
+                const userContent = (r1 && r1.content) || '';
+                const machContent = (r2 && r2.content) || '';
+                AD.gpoScripts = {
+                    logon:    adParseScriptsIni(userContent, 'Logon'),
+                    logoff:   adParseScriptsIni(userContent, 'Logoff'),
+                    startup:  adParseScriptsIni(machContent, 'Startup'),
+                    shutdown: adParseScriptsIni(machContent, 'Shutdown'),
+                };
+                adRenderGPOScripts();
+            });
+        });
+    }
+
+    function adRenderGPOScripts() {
+        ['logon','logoff','startup','shutdown'].forEach(type => {
+            const el = document.getElementById('adGPO-' + type + 'Scripts');
+            if (!el) return;
+            const scripts = (AD.gpoScripts && AD.gpoScripts[type]) || [];
+            if (!scripts.length) { el.innerHTML = '<div style="color:var(--text-dim);font-size:12px;padding:2px 0">Nenhum script</div>'; return; }
+            let html = '';
+            scripts.forEach((sc, i) => {
+                html += '<div style="display:flex;gap:4px;margin-bottom:4px;align-items:center">' +
+                    '<input type="text" value="' + adXmlEsc(sc.cmdline) + '" placeholder="Caminho do script" style="flex:2;font-size:12px" oninput="AD.gpoScripts.' + type + '[' + i + '].cmdline=this.value">' +
+                    '<input type="text" value="' + adXmlEsc(sc.params) + '" placeholder="Parâmetros" style="flex:1;font-size:12px" oninput="AD.gpoScripts.' + type + '[' + i + '].params=this.value">' +
+                    '<button class="ad-btn-danger ad-btn-sm" onclick="adRemoveGPOScript(\'' + type + '\',' + i + ')">&#128465;</button></div>';
+            });
+            el.innerHTML = html;
+        });
+    }
+
+    window.adAddGPOScript = function(type) {
+        AD.gpoScripts = AD.gpoScripts || {};
+        AD.gpoScripts[type] = AD.gpoScripts[type] || [];
+        AD.gpoScripts[type].push({ cmdline: '', params: '' });
+        adRenderGPOScripts();
+    };
+
+    window.adRemoveGPOScript = function(type, i) {
+        AD.gpoScripts[type].splice(i, 1);
+        adRenderGPOScripts();
+    };
+
+    window.adSaveGPOScripts = function() {
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        if (!guid) return;
+        const { user, machine } = adBuildScriptsIni(AD.gpoScripts || {});
+        let pending = 2, errors = [];
+        const done = () => { if (--pending === 0) { if (errors.length) alert('Erro: ' + errors.join('; ')); else alert('Scripts salvos!'); } };
+        adSendRequest('gpo_write_file', { gpo_guid: guid, rel_path: 'User/Scripts/scripts.ini', content: user }, (r) => {
+            if (!r || !r.ok) errors.push(r && r.error || 'user scripts');
+            done();
+        });
+        adSendRequest('gpo_write_file', { gpo_guid: guid, rel_path: 'Machine/Scripts/scripts.ini', content: machine }, (r) => {
+            if (!r || !r.ok) errors.push(r && r.error || 'machine scripts');
+            done();
+        });
+    };
+
+    // ─── GPO: Segurança ───
+    window.adSaveGPOSecurity = function() {
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        if (!guid) return;
+        const content = document.getElementById('adGPO-secContent').value;
+        adSendRequest('gpo_write_file', {
+            gpo_guid: guid,
+            rel_path: 'MACHINE/Microsoft/Windows NT/SecEdit/GptTmpl.inf',
+            content
+        }, (r) => {
+            if (r && r.ok) alert('Configurações de segurança salvas!');
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
 
     function adLoadShares() {
         document.getElementById('adDetailTitle').textContent = 'Compartilhamentos';
@@ -3348,6 +3957,7 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
         const el = document.getElementById(id);
         if (el) el.classList.add('visible');
     }
+    window.showModal = showModal;
 
     function adUpdateStatus(text, connected) {
         const dot  = document.getElementById('adStatusDot');
