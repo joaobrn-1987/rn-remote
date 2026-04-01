@@ -1040,19 +1040,22 @@
 
 <!-- ── Modal Propriedades GPO ────────────────────────── -->
 <div class="ad-modal-overlay" id="adGPOModal">
-  <div class="ad-modal" style="max-width:640px;width:95%">
+  <div class="ad-modal" style="max-width:900px;width:97%">
     <div class="ad-modal-header">
       <span class="ad-modal-title" id="adGPO-title">Propriedades da GPO</span>
       <button class="ad-modal-close" onclick="adCloseModal('adGPOModal')">&#10005;</button>
     </div>
-    <div class="ad-modal-tabs" id="adGPOTabs">
+    <div class="ad-modal-tabs" id="adGPOTabs" style="flex-wrap:wrap">
       <div class="ad-modal-tab active" onclick="adGPOTab('general')">Geral</div>
       <div class="ad-modal-tab" onclick="adGPOTab('links')">Vínculos</div>
+      <div class="ad-modal-tab" onclick="adGPOTab('secpol')">Pol. Segurança</div>
+      <div class="ad-modal-tab" onclick="adGPOTab('prefs')">Preferences</div>
       <div class="ad-modal-tab" onclick="adGPOTab('drives')">Pastas de Rede</div>
       <div class="ad-modal-tab" onclick="adGPOTab('scripts')">Scripts</div>
-      <div class="ad-modal-tab" onclick="adGPOTab('security')">Segurança</div>
+      <div class="ad-modal-tab" onclick="adGPOTab('status')">Status</div>
+      <div class="ad-modal-tab" onclick="adGPOTab('filtering')">Filtragem</div>
     </div>
-    <div class="ad-modal-body" style="min-height:280px">
+    <div class="ad-modal-body" style="min-height:320px">
       <!-- Tab Geral -->
       <div id="adGPOTab-general">
         <div class="ad-field"><label>Nome</label>
@@ -1073,6 +1076,21 @@
           <button class="ad-btn-secondary ad-btn-sm" onclick="adAddGPOLink()">+ Vincular</button>
         </div>
         <div id="adGPO-linksList"><div class="ad-loading">&#9203; Carregando...</div></div>
+      </div>
+      <!-- Tab Políticas de Segurança -->
+      <div id="adGPOTab-secpol" style="display:none">
+        <div style="display:flex;height:360px;gap:0;border:1px solid var(--border);border-radius:4px;overflow:hidden">
+          <div id="adSecTree" style="width:200px;border-right:1px solid var(--border);overflow-y:auto;background:var(--bg-alt);flex-shrink:0">
+            <div style="padding:8px;font-size:11px;color:var(--text-dim)">&#9203; Carregando...</div>
+          </div>
+          <div id="adSecPanel" style="flex:1;overflow-y:auto;padding:8px">
+            <div class="ad-empty" style="margin-top:40px">Selecione uma categoria na árvore</div>
+          </div>
+        </div>
+      </div>
+      <!-- Tab Preferences -->
+      <div id="adGPOTab-prefs" style="display:none">
+        <div id="adPrefsView"><div class="ad-loading">&#9203; Carregando...</div></div>
       </div>
       <!-- Tab Pastas de Rede -->
       <div id="adGPOTab-drives" style="display:none">
@@ -1111,18 +1129,95 @@
           <button class="ad-btn-primary ad-btn-sm" onclick="adSaveGPOScripts()">Salvar Scripts</button>
         </div>
       </div>
-      <!-- Tab Segurança -->
-      <div id="adGPOTab-security" style="display:none">
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px">GptTmpl.inf — configurações de segurança da máquina</div>
-        <textarea id="adGPO-secContent" style="width:100%;height:220px;font-family:monospace;font-size:11px;background:var(--bg-alt);border:1px solid var(--border);color:var(--text);padding:8px;box-sizing:border-box;resize:vertical"></textarea>
-        <div style="margin-top:6px;text-align:right">
-          <button class="ad-btn-primary ad-btn-sm" onclick="adSaveGPOSecurity()">Salvar Segurança</button>
+      <!-- Tab Status -->
+      <div id="adGPOTab-status" style="display:none">
+        <div style="padding:20px">
+          <p style="font-size:12px;color:var(--text-dim);margin:0 0 16px">Define quais configurações desta GPO estão ativas nos clientes.</p>
+          <label class="ad-field-check" style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+            <input type="checkbox" id="adGPO-computerEnabled">
+            <span>Computer Configuration habilitada</span>
+          </label>
+          <label class="ad-field-check" style="display:flex;align-items:center;gap:8px;margin-bottom:20px">
+            <input type="checkbox" id="adGPO-userEnabled">
+            <span>User Configuration habilitada</span>
+          </label>
+          <div style="text-align:right">
+            <button class="ad-btn-primary ad-btn-sm" onclick="adSaveGPOStatusTab()">Salvar</button>
+          </div>
+        </div>
+      </div>
+      <!-- Tab Filtragem -->
+      <div id="adGPOTab-filtering" style="display:none">
+        <div style="margin-bottom:16px">
+          <div style="font-weight:600;font-size:13px;margin-bottom:8px">Filtragem de Segurança</div>
+          <div id="adGPO-secFilterList" style="margin-bottom:8px"></div>
+          <button class="ad-btn-secondary ad-btn-sm" onclick="adAddSecurityFilter()">+ Adicionar Principal</button>
+        </div>
+        <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
+        <div>
+          <div style="font-weight:600;font-size:13px;margin-bottom:8px">Filtro WMI</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select id="adGPO-wmiFilterSel" style="flex:1;min-width:200px"><option value="">-- Nenhum --</option></select>
+            <button class="ad-btn-secondary ad-btn-sm" onclick="adApplyWMIFilter()">Aplicar</button>
+            <button class="ad-btn-secondary ad-btn-sm" onclick="adNewWMIFilterModal()">+ Novo Filtro</button>
+          </div>
+          <div id="adGPO-wmiCurrent" style="font-size:11px;color:var(--text-dim);margin-top:6px"></div>
         </div>
       </div>
     </div>
     <div class="ad-modal-footer">
       <button class="ad-btn-danger ad-btn-sm" onclick="adDeleteGPOFromModal()" style="margin-right:auto">&#128465; Excluir GPO</button>
       <button class="ad-btn-secondary" onclick="adCloseModal('adGPOModal')">Fechar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal Edição Configuração de Segurança ─────────── -->
+<div class="ad-modal-overlay" id="adSecSettingModal">
+  <div class="ad-modal" style="max-width:480px;width:95%">
+    <div class="ad-modal-header">
+      <span class="ad-modal-title" id="adSecSetting-title">Configuração de Segurança</span>
+      <button class="ad-modal-close" onclick="adCloseModal('adSecSettingModal')">&#10005;</button>
+    </div>
+    <div class="ad-modal-body" id="adSecSetting-body"></div>
+    <div class="ad-modal-footer">
+      <button class="ad-btn-secondary" onclick="adCloseModal('adSecSettingModal')">Cancelar</button>
+      <button class="ad-btn-danger ad-btn-sm" id="adSecSetting-delBtn" onclick="adDeleteSecSetting()" style="margin-right:auto;display:none">Remover</button>
+      <button class="ad-btn-primary" onclick="adSaveSecSetting()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal Preference Item ──────────────────────────── -->
+<div class="ad-modal-overlay" id="adPrefItemModal">
+  <div class="ad-modal" style="max-width:540px;width:95%">
+    <div class="ad-modal-header">
+      <span class="ad-modal-title" id="adPrefItem-title">Item de Preference</span>
+      <button class="ad-modal-close" onclick="adCloseModal('adPrefItemModal')">&#10005;</button>
+    </div>
+    <div class="ad-modal-body" id="adPrefItem-body"></div>
+    <div class="ad-modal-footer">
+      <button class="ad-btn-secondary" onclick="adCloseModal('adPrefItemModal')">Cancelar</button>
+      <button class="ad-btn-primary" onclick="adSavePrefItem()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal Novo WMI Filter ──────────────────────────── -->
+<div class="ad-modal-overlay" id="adWMIFilterModal">
+  <div class="ad-modal" style="max-width:480px;width:95%">
+    <div class="ad-modal-header">
+      <span class="ad-modal-title">Novo Filtro WMI</span>
+      <button class="ad-modal-close" onclick="adCloseModal('adWMIFilterModal')">&#10005;</button>
+    </div>
+    <div class="ad-modal-body">
+      <div class="ad-field"><label>Nome</label><input type="text" id="adWMI-name" placeholder="Filtro Windows 10+"></div>
+      <div class="ad-field"><label>Descrição</label><input type="text" id="adWMI-desc"></div>
+      <div class="ad-field"><label>Query WQL</label><textarea id="adWMI-query" style="width:100%;height:80px;font-family:monospace;font-size:12px;background:var(--bg-alt);border:1px solid var(--border);color:var(--text);padding:6px;box-sizing:border-box" placeholder="SELECT * FROM Win32_OperatingSystem WHERE Version &gt;= '10.0'"></textarea></div>
+    </div>
+    <div class="ad-modal-footer">
+      <button class="ad-btn-secondary" onclick="adCloseModal('adWMIFilterModal')">Cancelar</button>
+      <button class="ad-btn-primary" onclick="adCreateWMIFilter()">Criar</button>
     </div>
   </div>
 </div>
@@ -3527,23 +3622,28 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
     };
 
     window.adOpenGPOProps = function(guid, name) {
-        AD.selectedGPO = { guid, name };
-        AD.gpoScripts = { logon: [], logoff: [], startup: [], shutdown: [] };
+        AD.selectedGPO  = { guid, name };
+        AD.gpoScripts   = { logon: [], logoff: [], startup: [], shutdown: [] };
+        AD.secLoaded    = false;
+        AD.prefsLoaded  = false;
+        AD.statusLoaded = false;
+        AD.filterLoaded = false;
         document.getElementById('adGPO-title').textContent = name || guid;
-        document.getElementById('adGPO-name').value = name || '';
-        document.getElementById('adGPO-guid').value = guid;
+        document.getElementById('adGPO-name').value  = name || '';
+        document.getElementById('adGPO-guid').value  = guid;
         document.getElementById('adGPO-version').value = '…';
-        document.getElementById('adGPO-path').value = '…';
+        document.getElementById('adGPO-path').value    = '…';
         document.getElementById('adGPO-linksSummary').textContent = '…';
+        document.getElementById('adSecTree').innerHTML  = '<div style="padding:8px;font-size:11px;color:var(--text-dim)">&#9203; Carregando...</div>';
+        document.getElementById('adSecPanel').innerHTML = '<div class="ad-empty" style="margin-top:40px">Selecione uma categoria na árvore</div>';
+        document.getElementById('adPrefsView').innerHTML = '<div class="ad-loading">&#9203; Carregando...</div>';
         adGPOTab('general');
         showModal('adGPOModal');
-        // Carrega detalhes
         adSendRequest('gpo_get', { gpo_guid: guid }, (r) => {
             if (r && r.gpo) {
                 const g = r.gpo;
                 document.getElementById('adGPO-version').value = g.version || '—';
-                document.getElementById('adGPO-path').value = g.path || '—';
-                if (g.gpt_tmpl) document.getElementById('adGPO-secContent').value = g.gpt_tmpl;
+                document.getElementById('adGPO-path').value    = g.path    || '—';
             }
         });
         adSendRequest('gpo_get_links', { gpo_guid: guid }, (r) => {
@@ -3557,13 +3657,19 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
     };
 
     function adGPOTabEl(name) {
-        const tabs = document.querySelectorAll('#adGPOTabs .ad-modal-tab');
-        const panels = ['general','links','drives','scripts','security'];
+        const tabs   = document.querySelectorAll('#adGPOTabs .ad-modal-tab');
+        const panels = ['general','links','secpol','prefs','drives','scripts','status','filtering'];
         tabs.forEach((t, i) => {
             const active = panels[i] === name;
             t.classList.toggle('active', active);
             document.getElementById('adGPOTab-' + panels[i]).style.display = active ? '' : 'none';
         });
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        if (!guid) return;
+        if (name === 'secpol'    && !AD.secLoaded)     { AD.secLoaded    = true; adLoadSecEditor(guid); }
+        if (name === 'prefs'     && !AD.prefsLoaded)   { AD.prefsLoaded  = true; adLoadPrefsTab(guid); }
+        if (name === 'status'    && !AD.statusLoaded)  { AD.statusLoaded = true; adLoadStatusTab(guid); }
+        if (name === 'filtering' && !AD.filterLoaded)  { AD.filterLoaded = true; adLoadFilteringTab(guid); }
     }
     window.adGPOTab = adGPOTabEl;
 
@@ -3594,13 +3700,40 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
     function adRenderGPOLinks(links, guid) {
         const el = document.getElementById('adGPO-linksList');
         if (!links.length) { el.innerHTML = '<div class="ad-empty">Nenhuma OU vinculada</div>'; return; }
-        let html = '<table class="ad-list-table"><thead><tr><th>OU</th><th></th></tr></thead><tbody>';
-        links.forEach(l => {
-            html += '<tr><td style="font-size:12px">' + escapeHtml(l.dn) + '</td>' +
-                '<td><button class="ad-btn-danger ad-btn-sm" onclick="adRemoveGPOLink(\'' +
-                escapeHtml(l.dn).replace(/'/g,"\\'") + '\')">Remover</button></td></tr>';
+        let html = '<table class="ad-list-table" style="font-size:12px"><thead><tr>' +
+            '<th>OU</th><th style="width:70px;text-align:center">Enforce</th>' +
+            '<th style="width:80px;text-align:center">Habilitado</th>' +
+            '<th style="width:60px;text-align:center">Ordem</th><th></th></tr></thead><tbody>';
+        links.forEach((l, idx) => {
+            const dn   = escapeHtml(l.dn);
+            const dnJs = l.dn.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+            const rowId = 'gplink-' + idx;
+            html += '<tr id="' + rowId + '">' +
+                '<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + dn + '">' + dn + '</td>' +
+                '<td style="text-align:center"><input type="checkbox" id="' + rowId + '-enforce" onchange="adToggleLinkEnforce(\'' +
+                    escapeHtml(guid).replace(/'/g,"\\'") + '\',\'' + dnJs + '\',this.checked)" title="Forçado"></td>' +
+                '<td style="text-align:center"><input type="checkbox" id="' + rowId + '-enabled" checked onchange="adToggleLinkEnabled(\'' +
+                    escapeHtml(guid).replace(/'/g,"\\'") + '\',\'' + dnJs + '\',this.checked)" title="Habilitado"></td>' +
+                '<td style="text-align:center;white-space:nowrap">' +
+                    (idx > 0 ? '<button class="ad-btn-secondary ad-btn-sm" style="padding:0 4px" onclick="adMoveLinkUp(\'' + dnJs + '\',\'' + escapeHtml(guid).replace(/'/g,"\\'") + '\')">▲</button>' : '') +
+                    (idx < links.length-1 ? '<button class="ad-btn-secondary ad-btn-sm" style="padding:0 4px;margin-left:2px" onclick="adMoveLinkDown(\'' + dnJs + '\',\'' + escapeHtml(guid).replace(/'/g,"\\'") + '\')">▼</button>' : '') +
+                '</td>' +
+                '<td><button class="ad-btn-danger ad-btn-sm" onclick="adRemoveGPOLink(\'' + dnJs + '\')">Remover</button></td></tr>';
         });
         el.innerHTML = html + '</tbody></table>';
+        // Carrega flags de cada link em paralelo
+        links.forEach((l, idx) => {
+            adSendRequest('gpo_get_inheritance', { container_dn: l.dn }, (r) => {
+                if (!r || r.error) return;
+                const linkInfo = (r.links || []).find(x => x.guid && guid && x.guid.toLowerCase() === guid.toLowerCase());
+                if (!linkInfo) return;
+                const rowId = 'gplink-' + idx;
+                const enf = document.getElementById(rowId + '-enforce');
+                const enb = document.getElementById(rowId + '-enabled');
+                if (enf) enf.checked = !!linkInfo.enforced;
+                if (enb) enb.checked = !!linkInfo.enabled;
+            });
+        });
     }
 
     window.adAddGPOLink = function() {
@@ -3854,18 +3987,586 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
         });
     };
 
-    // ─── GPO: Segurança ───
-    window.adSaveGPOSecurity = function() {
+    // ─── GPO: Links avançados ───────────────────────────────────────────────
+
+    window.adToggleLinkEnforce = function(guid, dn, enforced) {
+        adSendRequest('gpo_set_link_enforced', { gpo_guid: guid, container_dn: dn, enforced }, (r) => {
+            if (!r || !r.ok) alert('Erro ao alterar enforcement: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    window.adToggleLinkEnabled = function(guid, dn, enabled) {
+        adSendRequest('gpo_set_link_enabled', { gpo_guid: guid, container_dn: dn, enabled }, (r) => {
+            if (!r || !r.ok) alert('Erro ao alterar link: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    window.adMoveLinkUp = function(dn, guid) {
+        adSendRequest('gpo_get_inheritance', { container_dn: dn }, (r) => {
+            if (!r || r.error) return;
+            const links = r.links || [];
+            const idx = links.findIndex(l => l.guid && guid && l.guid.toLowerCase() === guid.toLowerCase());
+            if (idx <= 0) return;
+            adSendRequest('gpo_set_link_order', { container_dn: dn, gpo_guid: guid, position: idx - 1 }, (r2) => {
+                if (r2 && r2.ok) {
+                    adSendRequest('gpo_get_links', { gpo_guid: guid }, (r3) => {
+                        adRenderGPOLinks((r3 && r3.links) || [], guid);
+                    });
+                }
+            });
+        });
+    };
+
+    window.adMoveLinkDown = function(dn, guid) {
+        adSendRequest('gpo_get_inheritance', { container_dn: dn }, (r) => {
+            if (!r || r.error) return;
+            const links = r.links || [];
+            const idx = links.findIndex(l => l.guid && guid && l.guid.toLowerCase() === guid.toLowerCase());
+            if (idx < 0 || idx >= links.length - 1) return;
+            adSendRequest('gpo_set_link_order', { container_dn: dn, gpo_guid: guid, position: idx + 1 }, (r2) => {
+                if (r2 && r2.ok) {
+                    adSendRequest('gpo_get_links', { gpo_guid: guid }, (r3) => {
+                        adRenderGPOLinks((r3 && r3.links) || [], guid);
+                    });
+                }
+            });
+        });
+    };
+
+    // ─── GPO: Políticas de Segurança (editor visual) ────────────────────────
+
+    function adLoadSecEditor(guid) {
+        const treeEl  = document.getElementById('adSecTree');
+        const panelEl = document.getElementById('adSecPanel');
+        treeEl.innerHTML  = '<div style="padding:8px;font-size:11px;color:var(--text-dim)">&#9203; Carregando...</div>';
+        panelEl.innerHTML = '<div class="ad-empty" style="margin-top:40px">Selecione uma categoria</div>';
+        let tmpl = null, vals = null;
+        const tryRender = () => {
+            if (tmpl && vals) adRenderSecCategories(tmpl, vals, guid);
+        };
+        adSendRequest('gpo_sec_template', {}, (r) => { tmpl = r && r.categories ? r : {categories:{}}; tryRender(); });
+        adSendRequest('gpo_sec_read_all', { gpo_guid: guid }, (r) => { vals = r && r.sections ? r.sections : {}; tryRender(); });
+    }
+
+    function adRenderSecCategories(tmpl, vals, guid) {
+        AD.secTemplate = tmpl;
+        AD.secValues   = vals;
+        AD.secGuid     = guid;
+        const treeEl = document.getElementById('adSecTree');
+        let html = '';
+        const cats = tmpl.categories || {};
+        Object.keys(cats).forEach(catName => {
+            html += '<div style="padding:6px 8px 2px;font-weight:600;font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:.5px">' + escapeHtml(catName) + '</div>';
+            const subcats = cats[catName];
+            Object.keys(subcats).forEach(subName => {
+                const path = catName + '|' + subName;
+                html += '<div class="ad-sec-cat-item" style="padding:4px 8px 4px 16px;font-size:12px;cursor:pointer;border-radius:3px;transition:background .15s" ' +
+                    'onmouseover="this.style.background=\'var(--bg-hover, #e8eaed)\'" onmouseout="if(!this.classList.contains(\'active\'))this.style.background=\'\'" ' +
+                    'onclick="adSelectSecCategory(\'' + escapeHtml(path).replace(/'/g,"\\'") + '\')">' +
+                    escapeHtml(subName) + '</div>';
+            });
+        });
+        treeEl.innerHTML = html || '<div class="ad-empty">Sem categorias</div>';
+    }
+
+    window.adSelectSecCategory = function(path) {
+        // Highlight active
+        document.querySelectorAll('.ad-sec-cat-item').forEach(el => {
+            el.classList.remove('active');
+            el.style.background = '';
+        });
+        event && event.target && event.target.classList.add('active');
+        if (event && event.target) event.target.style.background = 'var(--accent-muted, #dde7f5)';
+
+        const [catName, subName] = path.split('|');
+        const cats = AD.secTemplate && AD.secTemplate.categories;
+        if (!cats || !cats[catName] || !cats[catName][subName]) return;
+        const info     = cats[catName][subName];
+        const section  = info.section;
+        const settings = info.settings || [];
+        const vals     = (AD.secValues && AD.secValues[section]) || {};
+        adRenderSecSettings(settings, section, vals, catName + ' > ' + subName);
+    };
+
+    function adRenderSecSettings(settings, section, vals, title) {
+        const panelEl = document.getElementById('adSecPanel');
+        if (!settings.length) {
+            panelEl.innerHTML = '<div style="font-size:12px;color:var(--text-dim);padding:8px">' +
+                escapeHtml(title) + ' — nenhuma configuração disponível nesta versão.</div>';
+            return;
+        }
+        const AUDIT_LABELS = ['Não Auditar','Sucesso','Falha','Sucesso e Falha'];
+        let html = '<div style="font-size:12px;font-weight:600;color:var(--text-dim);margin-bottom:8px">' + escapeHtml(title) + '</div>' +
+            '<table class="ad-list-table" style="font-size:12px"><thead><tr>' +
+            '<th>Configuração</th><th style="width:90px">Estado</th><th style="width:140px">Valor</th><th style="width:40px"></th></tr></thead><tbody>';
+        settings.forEach(s => {
+            const rawVal = vals[s.key.toLowerCase()] || vals[s.key] || '';
+            const defined = rawVal !== '';
+            let valDisplay = '—';
+            if (defined) {
+                if (s.type === 'boolean')  valDisplay = rawVal === '1' ? 'Habilitado' : 'Desabilitado';
+                else if (s.type === 'audit') {
+                    const n = parseInt(rawVal);
+                    valDisplay = AUDIT_LABELS[n] || rawVal;
+                } else if (s.type === 'reg_dword' && s.options) {
+                    const opt = s.options.find(o => String(o.v) === String(rawVal));
+                    valDisplay = opt ? opt.l : rawVal;
+                } else {
+                    valDisplay = rawVal.length > 40 ? rawVal.substring(0,40) + '…' : rawVal;
+                }
+            }
+            const keyJs = s.key.replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+            const secJs = section.replace(/'/g,"\\'");
+            html += '<tr style="cursor:pointer" ondblclick="adEditSecSetting(\'' + secJs + '\',\'' + keyJs + '\')">' +
+                '<td>' + escapeHtml(s.label) + '</td>' +
+                '<td style="color:' + (defined ? 'var(--success,#2e7d32)' : 'var(--text-dim)') + '">' +
+                    (defined ? 'Definida' : 'Não definida') + '</td>' +
+                '<td style="font-family:monospace;font-size:11px">' + escapeHtml(valDisplay) + '</td>' +
+                '<td><button class="ad-btn-secondary ad-btn-sm" style="font-size:11px;padding:1px 6px" ' +
+                    'onclick="adEditSecSetting(\'' + secJs + '\',\'' + keyJs + '\')">Editar</button></td></tr>';
+        });
+        panelEl.innerHTML = html + '</tbody></table>';
+    }
+
+    window.adEditSecSetting = function(section, key) {
+        const guid = AD.secGuid;
+        if (!guid) return;
+        // Encontra metadata da configuração
+        let meta = null;
+        const cats = AD.secTemplate && AD.secTemplate.categories;
+        if (cats) {
+            outer: for (const cat of Object.values(cats)) {
+                for (const sub of Object.values(cat)) {
+                    const found = (sub.settings || []).find(s => s.key === key || s.key.toLowerCase() === key.toLowerCase());
+                    if (found) { meta = found; break outer; }
+                }
+            }
+        }
+        if (!meta) meta = { key, label: key, type: 'reg_sz' };
+        const vals    = (AD.secValues && AD.secValues[section]) || {};
+        const current = vals[key.toLowerCase()] || vals[key] || '';
+        AD._secEditState = { guid, section, key, meta, current };
+
+        document.getElementById('adSecSetting-title').textContent = meta.label;
+        const delBtn = document.getElementById('adSecSetting-delBtn');
+        delBtn.style.display = current !== '' ? 'inline-flex' : 'none';
+
+        const body   = document.getElementById('adSecSetting-body');
+        const AUDIT_OPTS = [{v:'0',l:'Não Auditar'},{v:'1',l:'Sucesso'},{v:'2',l:'Falha'},{v:'3',l:'Sucesso e Falha'}];
+        let content  = '';
+
+        if (meta.type === 'number') {
+            const chk = current !== '' ? 'checked' : '';
+            content = '<label class="ad-field-check" style="display:flex;align-items:center;gap:8px;margin-bottom:12px">' +
+                '<input type="checkbox" id="adSecEdit-defined" ' + chk + ' onchange="document.getElementById(\'adSecEdit-val\').disabled=!this.checked">' +
+                '<span>Definir esta política</span></label>' +
+                '<div class="ad-field"><label>' + escapeHtml(meta.label) + (meta.unit ? ' (' + escapeHtml(meta.unit) + ')' : '') + '</label>' +
+                '<input type="number" id="adSecEdit-val" value="' + adXmlEsc(current || String(meta.default || '')) + '"' +
+                (meta.min !== undefined ? ' min="'+meta.min+'"' : '') + (meta.max !== undefined ? ' max="'+meta.max+'"' : '') +
+                (current === '' ? ' disabled' : '') + '></div>';
+        } else if (meta.type === 'boolean') {
+            content = '<div class="ad-field"><label>' + escapeHtml(meta.label) + '</label>' +
+                '<select id="adSecEdit-val">' +
+                '<option value="" ' + (current==='' ? 'selected':'') + '>Não definido</option>' +
+                '<option value="1" ' + (current==='1' ? 'selected':'') + '>Habilitado</option>' +
+                '<option value="0" ' + (current==='0' ? 'selected':'') + '>Desabilitado</option>' +
+                '</select></div>';
+        } else if (meta.type === 'audit') {
+            content = '<div class="ad-field"><label>' + escapeHtml(meta.label) + '</label>' +
+                '<select id="adSecEdit-val">' +
+                '<option value="" ' + (current==='' ? 'selected':'') + '>Não definido</option>' +
+                AUDIT_OPTS.map(o => '<option value="' + o.v + '"' + (current===o.v?' selected':'') + '>' + o.l + '</option>').join('') +
+                '</select></div>';
+        } else if (meta.type === 'reg_dword' && meta.options) {
+            content = '<div class="ad-field"><label>' + escapeHtml(meta.label) + '</label>' +
+                '<select id="adSecEdit-val">' +
+                '<option value="" ' + (current==='' ? 'selected':'') + '>Não definido</option>' +
+                meta.options.map(o => '<option value="' + o.v + '"' + (String(current)===String(o.v)?' selected':'') + '>' + escapeHtml(o.l) + '</option>').join('') +
+                '</select></div>';
+        } else if (meta.type === 'reg_dword') {
+            const chk = current !== '' ? 'checked' : '';
+            content = '<label class="ad-field-check" style="display:flex;align-items:center;gap:8px;margin-bottom:12px">' +
+                '<input type="checkbox" id="adSecEdit-defined" ' + chk + ' onchange="document.getElementById(\'adSecEdit-val\').disabled=!this.checked">' +
+                '<span>Definir</span></label>' +
+                '<div class="ad-field"><label>' + escapeHtml(meta.label) + (meta.unit ? ' (' + escapeHtml(meta.unit) + ')' : '') + '</label>' +
+                '<input type="number" id="adSecEdit-val" value="' + adXmlEsc(current || String(meta.default || '0')) + '"' +
+                (current === '' ? ' disabled' : '') + '></div>';
+        } else if (meta.type === 'sid_list') {
+            content = '<div class="ad-field"><label>' + escapeHtml(meta.label) + '</label>' +
+                '<div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">Um SID ou grupo por linha (ex: *S-1-5-32-544 ou Administrators)</div>' +
+                '<textarea id="adSecEdit-val" style="width:100%;height:100px;font-family:monospace;font-size:12px;background:var(--bg-alt);border:1px solid var(--border);color:var(--text);padding:6px;box-sizing:border-box">' +
+                adXmlEsc(current) + '</textarea></div>';
+        } else {
+            content = '<div class="ad-field"><label>' + escapeHtml(meta.label) + '</label>' +
+                '<input type="text" id="adSecEdit-val" value="' + adXmlEsc(current) + '"></div>';
+        }
+        body.innerHTML = content;
+        showModal('adSecSettingModal');
+    };
+
+    window.adSaveSecSetting = function() {
+        const s = AD._secEditState;
+        if (!s) return;
+        const valEl = document.getElementById('adSecEdit-val');
+        const defEl = document.getElementById('adSecEdit-defined');
+        if (!valEl) return;
+        if (defEl && !defEl.checked) {
+            // Remover configuração
+            adSendRequest('gpo_sec_delete', { gpo_guid: s.guid, section: s.section, key: s.key }, (r) => {
+                if (r && r.ok) {
+                    delete ((AD.secValues[s.section] || {})[s.key]);
+                    adCloseModal('adSecSettingModal');
+                    adSelectSecCategory(Object.keys(AD.secTemplate.categories).reduce((found, cat) => {
+                        Object.keys(AD.secTemplate.categories[cat]).forEach(sub => {
+                            if ((AD.secTemplate.categories[cat][sub].section === s.section)) found = cat + '|' + sub;
+                        });
+                        return found;
+                    }, ''));
+                } else alert('Erro: ' + ((r && r.error) || 'falha'));
+            });
+            return;
+        }
+        const val = valEl.value;
+        if (val === '') {
+            adSendRequest('gpo_sec_delete', { gpo_guid: s.guid, section: s.section, key: s.key }, (r) => {
+                if (r && r.ok) {
+                    if (AD.secValues[s.section]) delete AD.secValues[s.section][s.key];
+                    adCloseModal('adSecSettingModal');
+                    adRefreshSecPanel(s.section);
+                } else alert('Erro ao remover: ' + ((r && r.error) || 'falha'));
+            });
+            return;
+        }
+        adSendRequest('gpo_sec_write', { gpo_guid: s.guid, section: s.section, key: s.key, value: val }, (r) => {
+            if (r && r.ok) {
+                if (!AD.secValues[s.section]) AD.secValues[s.section] = {};
+                AD.secValues[s.section][s.key.toLowerCase()] = val;
+                adCloseModal('adSecSettingModal');
+                adRefreshSecPanel(s.section);
+            } else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    window.adDeleteSecSetting = function() {
+        const s = AD._secEditState;
+        if (!s) return;
+        adSendRequest('gpo_sec_delete', { gpo_guid: s.guid, section: s.section, key: s.key }, (r) => {
+            if (r && r.ok) {
+                if (AD.secValues[s.section]) delete AD.secValues[s.section][s.key.toLowerCase()];
+                adCloseModal('adSecSettingModal');
+                adRefreshSecPanel(s.section);
+            } else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    function adRefreshSecPanel(section) {
+        const cats = AD.secTemplate && AD.secTemplate.categories;
+        if (!cats) return;
+        for (const [catName, cat] of Object.entries(cats)) {
+            for (const [subName, info] of Object.entries(cat)) {
+                if (info.section === section) {
+                    const vals = (AD.secValues && AD.secValues[section]) || {};
+                    adRenderSecSettings(info.settings || [], section, vals, catName + ' > ' + subName);
+                    return;
+                }
+            }
+        }
+    }
+
+    // ─── GPO: Preferences ───────────────────────────────────────────────────
+
+    function adLoadPrefsTab(guid) {
+        const el = document.getElementById('adPrefsView');
+        el.innerHTML = '<div class="ad-loading">&#9203; Carregando...</div>';
+        adSendRequest('gpo_pref_types', {}, (r) => {
+            if (!r || !r.types) { el.innerHTML = '<div class="ad-empty">Erro ao carregar tipos</div>'; return; }
+            adRenderPrefsGrid(guid, r.types);
+        });
+    }
+
+    function adRenderPrefsGrid(guid, types) {
+        const el = document.getElementById('adPrefsView');
+        const machTypes = types.filter(t => t.scope === 'machine' || t.scope === 'both');
+        const userTypes = types.filter(t => t.scope === 'user'    || t.scope === 'both');
+
+        const renderSection = (title, list) => {
+            let h = '<div style="font-weight:600;font-size:12px;color:var(--text-dim);margin:8px 0 6px">' + escapeHtml(title) + '</div>' +
+                '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">';
+            list.forEach(t => {
+                h += '<div style="border:1px solid var(--border);border-radius:4px;padding:8px 12px;cursor:pointer;min-width:140px;font-size:12px;background:var(--bg-card);transition:border-color .15s" ' +
+                    'onmouseover="this.style.borderColor=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\'" ' +
+                    'onclick="adOpenPrefType(\'' + escapeHtml(guid).replace(/'/g,"\\'") + '\',\'' + t.scope + '\',\'' + t.id + '\')">' +
+                    '<div style="font-size:16px;margin-bottom:2px">&#128196;</div>' +
+                    '<div>' + escapeHtml(t.label) + '</div>' +
+                    '</div>';
+            });
+            return h + '</div>';
+        };
+
+        el.innerHTML = renderSection('Computer Configuration', machTypes) + renderSection('User Configuration', userTypes);
+    }
+
+    window.adOpenPrefType = function(guid, scope, typeId) {
+        const el = document.getElementById('adPrefsView');
+        el.innerHTML = '<div class="ad-loading">&#9203; Carregando itens...</div>';
+        adSendRequest('gpo_pref_list', { gpo_guid: guid, scope, pref_type: typeId }, (r) => {
+            if (r && r.error) { el.innerHTML = '<div class="ad-empty">' + escapeHtml(r.error) + '</div>'; return; }
+            adRenderPrefItems(guid, scope, typeId, (r && r.items) || []);
+        });
+    };
+
+    function adRenderPrefItems(guid, scope, typeId, items) {
+        const el = document.getElementById('adPrefsView');
+        AD._prefState = { guid, scope, typeId, items };
+        let html = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">' +
+            '<button class="ad-btn-secondary ad-btn-sm" onclick="adLoadPrefsTab(\'' + escapeHtml(guid).replace(/'/g,"\\'") + '\')">&#8592; Voltar</button>' +
+            '<span style="font-size:13px;font-weight:600">' + escapeHtml(typeId) + ' (' + (scope === 'machine' ? 'Computer' : 'User') + ')</span>' +
+            '<button class="ad-btn-secondary ad-btn-sm" style="margin-left:auto" onclick="adNewPrefItem()">+ Novo</button></div>';
+        if (!items.length) {
+            html += '<div class="ad-empty">Nenhum item</div>';
+        } else {
+            html += '<table class="ad-list-table" style="font-size:12px"><thead><tr><th>Nome</th><th>Action</th><th>Detalhes</th><th></th></tr></thead><tbody>';
+            items.forEach((item, i) => {
+                const props = Object.entries(item.properties || {}).slice(0,3).map(([k,v]) => escapeHtml(k)+'='+escapeHtml(v)).join(', ');
+                html += '<tr>' +
+                    '<td>' + escapeHtml(item.name || '—') + '</td>' +
+                    '<td>' + escapeHtml(item.action || '—') + '</td>' +
+                    '<td style="font-size:11px;color:var(--text-dim)">' + props + '</td>' +
+                    '<td style="white-space:nowrap">' +
+                        '<button class="ad-btn-secondary ad-btn-sm" onclick="adEditPrefItem(' + i + ')">Editar</button> ' +
+                        '<button class="ad-btn-danger ad-btn-sm" onclick="adDeletePrefItem(\'' + escapeHtml(item.uid).replace(/'/g,"\\'") + '\')">&#128465;</button>' +
+                    '</td></tr>';
+            });
+            html += '</tbody></table>';
+        }
+        el.innerHTML = html;
+    }
+
+    window.adNewPrefItem = function() {
+        const s = AD._prefState;
+        if (!s) return;
+        AD._prefEditItem = null;
+        document.getElementById('adPrefItem-title').textContent = 'Novo Item — ' + s.typeId;
+        document.getElementById('adPrefItem-body').innerHTML = adBuildPrefItemForm(null, s.typeId);
+        showModal('adPrefItemModal');
+    };
+
+    window.adEditPrefItem = function(idx) {
+        const s = AD._prefState;
+        if (!s) return;
+        const item = s.items[idx];
+        AD._prefEditItem = item;
+        document.getElementById('adPrefItem-title').textContent = 'Editar — ' + escapeHtml(item.name || s.typeId);
+        document.getElementById('adPrefItem-body').innerHTML = adBuildPrefItemForm(item, s.typeId);
+        showModal('adPrefItemModal');
+    };
+
+    function adBuildPrefItemForm(item, typeId) {
+        const props  = (item && item.properties) || {};
+        const action = (item && item.action) || 'U';
+        const actions = [{v:'C',l:'Criar'},{v:'R',l:'Substituir'},{v:'U',l:'Atualizar'},{v:'D',l:'Excluir'}];
+        let html = '<div class="ad-field"><label>Action</label><select id="adPrefEdit-action">' +
+            actions.map(a => '<option value="' + a.v + '"' + (action===a.v?' selected':'') + '>' + a.l + '</option>').join('') +
+            '</select></div>';
+        // Campos específicos por tipo
+        if (typeId === 'drives') {
+            html += '<div class="ad-field"><label>Letra</label><input type="text" id="adPrefEdit-letter" value="' + adXmlEsc(props.letter||'') + '" maxlength="2" placeholder="Z:"></div>';
+            html += '<div class="ad-field"><label>Caminho UNC</label><input type="text" id="adPrefEdit-path" value="' + adXmlEsc(props.path||'') + '" placeholder="\\\\servidor\\pasta"></div>';
+            html += '<div class="ad-field"><label>Rótulo</label><input type="text" id="adPrefEdit-label" value="' + adXmlEsc(props.label||'') + '"></div>';
+        } else if (typeId === 'registry') {
+            html += '<div class="ad-field"><label>Hive</label><select id="adPrefEdit-hive">' +
+                ['HKEY_LOCAL_MACHINE','HKEY_CURRENT_USER','HKEY_CLASSES_ROOT','HKEY_USERS'].map(h =>
+                    '<option' + (props.hive===h?' selected':'') + '>' + h + '</option>').join('') + '</select></div>';
+            html += '<div class="ad-field"><label>Chave</label><input type="text" id="adPrefEdit-key" value="' + adXmlEsc(props.key||'') + '" placeholder="Software\\Policies\\..."></div>';
+            html += '<div class="ad-field"><label>Nome do Valor</label><input type="text" id="adPrefEdit-name" value="' + adXmlEsc(props.name||props.valueName||'') + '"></div>';
+            html += '<div class="ad-field"><label>Tipo</label><select id="adPrefEdit-type">' +
+                ['REG_SZ','REG_DWORD','REG_BINARY','REG_EXPAND_SZ','REG_MULTI_SZ'].map(t =>
+                    '<option' + ((props.type||'REG_SZ')===t?' selected':'') + '>' + t + '</option>').join('') + '</select></div>';
+            html += '<div class="ad-field"><label>Valor</label><input type="text" id="adPrefEdit-value" value="' + adXmlEsc(props.value||'') + '"></div>';
+        } else if (typeId === 'environment') {
+            html += '<div class="ad-field"><label>Nome</label><input type="text" id="adPrefEdit-name" value="' + adXmlEsc(props.name||'') + '" placeholder="PATH"></div>';
+            html += '<div class="ad-field"><label>Valor</label><input type="text" id="adPrefEdit-value" value="' + adXmlEsc(props.value||'') + '"></div>';
+            html += '<div class="ad-field-check"><input type="checkbox" id="adPrefEdit-partial" ' + (props.partial==='1'?'checked':'') + '><label for="adPrefEdit-partial">Valor parcial (append)</label></div>';
+        } else {
+            // Genérico: name + JSON de props extras
+            html += '<div class="ad-field"><label>Nome</label><input type="text" id="adPrefEdit-name" value="' + adXmlEsc((item&&item.name)||'') + '"></div>';
+            const propsJson = JSON.stringify(props, null, 2);
+            html += '<div class="ad-field"><label>Propriedades (JSON)</label>' +
+                '<textarea id="adPrefEdit-json" style="width:100%;height:120px;font-family:monospace;font-size:11px;background:var(--bg-alt);border:1px solid var(--border);color:var(--text);padding:6px;box-sizing:border-box">' +
+                adXmlEsc(propsJson) + '</textarea></div>';
+        }
+        return html;
+    }
+
+    window.adSavePrefItem = function() {
+        const s = AD._prefState;
+        if (!s) return;
+        const typeId = s.typeId;
+        const action = document.getElementById('adPrefEdit-action');
+        let props = { action: action ? action.value : 'U' };
+
+        if (typeId === 'drives') {
+            props.letter = (document.getElementById('adPrefEdit-letter')||{}).value || '';
+            props.path   = (document.getElementById('adPrefEdit-path')||{}).value   || '';
+            props.label  = (document.getElementById('adPrefEdit-label')||{}).value  || '';
+            props.name   = props.letter || props.path;
+        } else if (typeId === 'registry') {
+            props.hive  = (document.getElementById('adPrefEdit-hive') ||{}).value || 'HKEY_LOCAL_MACHINE';
+            props.key   = (document.getElementById('adPrefEdit-key')  ||{}).value || '';
+            props.name  = (document.getElementById('adPrefEdit-name') ||{}).value || '';
+            props.type  = (document.getElementById('adPrefEdit-type') ||{}).value || 'REG_SZ';
+            props.value = (document.getElementById('adPrefEdit-value')||{}).value || '';
+        } else if (typeId === 'environment') {
+            props.name    = (document.getElementById('adPrefEdit-name') ||{}).value || '';
+            props.value   = (document.getElementById('adPrefEdit-value')||{}).value || '';
+            props.partial = (document.getElementById('adPrefEdit-partial')&&document.getElementById('adPrefEdit-partial').checked) ? '1' : '0';
+        } else {
+            props.name = (document.getElementById('adPrefEdit-name')||{}).value || '';
+            const jsonEl = document.getElementById('adPrefEdit-json');
+            if (jsonEl) {
+                try { Object.assign(props, JSON.parse(jsonEl.value)); } catch(e) {}
+            }
+        }
+
+        if (AD._prefEditItem) {
+            adSendRequest('gpo_pref_update', {
+                gpo_guid: s.guid, scope: s.scope, pref_type: typeId,
+                item_uid: AD._prefEditItem.uid, properties: props
+            }, (r) => {
+                if (r && r.ok) { adCloseModal('adPrefItemModal'); adOpenPrefType(s.guid, s.scope, typeId); }
+                else alert('Erro: ' + ((r && r.error) || 'falha'));
+            });
+        } else {
+            adSendRequest('gpo_pref_add', {
+                gpo_guid: s.guid, scope: s.scope, pref_type: typeId, properties: props
+            }, (r) => {
+                if (r && r.ok) { adCloseModal('adPrefItemModal'); adOpenPrefType(s.guid, s.scope, typeId); }
+                else alert('Erro: ' + ((r && r.error) || 'falha'));
+            });
+        }
+    };
+
+    window.adDeletePrefItem = function(uid) {
+        const s = AD._prefState;
+        if (!s || !confirm('Remover este item?')) return;
+        adSendRequest('gpo_pref_delete', {
+            gpo_guid: s.guid, scope: s.scope, pref_type: s.typeId, item_uid: uid
+        }, (r) => {
+            if (r && r.ok) adOpenPrefType(s.guid, s.scope, s.typeId);
+            else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    // ─── GPO: Status ─────────────────────────────────────────────────────────
+
+    function adLoadStatusTab(guid) {
+        adSendRequest('gpo_get_status', { gpo_guid: guid }, (r) => {
+            if (!r) return;
+            const ce = document.getElementById('adGPO-computerEnabled');
+            const ue = document.getElementById('adGPO-userEnabled');
+            if (ce) ce.checked = r.computer_enabled !== false;
+            if (ue) ue.checked = r.user_enabled     !== false;
+        });
+    }
+
+    window.adSaveGPOStatusTab = function() {
         const guid = AD.selectedGPO && AD.selectedGPO.guid;
         if (!guid) return;
-        const content = document.getElementById('adGPO-secContent').value;
-        adSendRequest('gpo_write_file', {
-            gpo_guid: guid,
-            rel_path: 'MACHINE/Microsoft/Windows NT/SecEdit/GptTmpl.inf',
-            content
+        const ce = document.getElementById('adGPO-computerEnabled');
+        const ue = document.getElementById('adGPO-userEnabled');
+        adSendRequest('gpo_set_status', {
+            gpo_guid:          guid,
+            computer_enabled:  ce ? ce.checked : true,
+            user_enabled:      ue ? ue.checked : true
         }, (r) => {
-            if (r && r.ok) alert('Configurações de segurança salvas!');
+            if (r && r.ok) alert('Status salvo!');
             else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    // ─── GPO: Filtragem ──────────────────────────────────────────────────────
+
+    function adLoadFilteringTab(guid) {
+        // Security Filtering
+        adSendRequest('gpo_get_sec_filtering', { gpo_guid: guid }, (r) => {
+            const listEl = document.getElementById('adGPO-secFilterList');
+            if (!listEl) return;
+            const principals = (r && r.principals) || [];
+            if (!principals.length) {
+                listEl.innerHTML = '<div style="font-size:12px;color:var(--text-dim)">Nenhum principal</div>';
+                return;
+            }
+            listEl.innerHTML = '<table class="ad-list-table" style="font-size:12px"><tbody>' +
+                principals.map(p =>
+                    '<tr><td>' + escapeHtml(p) + '</td>' +
+                    '<td><button class="ad-btn-danger ad-btn-sm" onclick="adRemoveSecurityFilter(\'' + escapeHtml(p).replace(/'/g,"\\'") + '\')">Remover</button></td></tr>'
+                ).join('') + '</tbody></table>';
+        });
+        // WMI Filters
+        adSendRequest('gpo_list_wmi_filters', {}, (r) => {
+            const sel = document.getElementById('adGPO-wmiFilterSel');
+            if (!sel) return;
+            const filters = (r && r.filters) || [];
+            sel.innerHTML = '<option value="">-- Nenhum --</option>' +
+                filters.map(f => '<option value="' + adXmlEsc(f.dn) + '">' + adXmlEsc(f.name || f.dn) + '</option>').join('');
+            // Current WMI filter
+            adSendRequest('gpo_get_wmi_filter', { gpo_guid: guid }, (r2) => {
+                const cur = document.getElementById('adGPO-wmiCurrent');
+                const wmi = (r2 && r2.wmi_filter) || '';
+                if (cur) cur.textContent = wmi ? 'Atual: ' + wmi : 'Nenhum filtro WMI aplicado';
+                if (wmi) {
+                    for (const opt of sel.options) { if (opt.value === wmi) { opt.selected = true; break; } }
+                }
+            });
+        });
+    }
+
+    window.adAddSecurityFilter = function() {
+        const principal = prompt('Nome do grupo ou SID (ex: Domain Computers):');
+        if (!principal) return;
+        // set_security_filtering retorna erro informativo — notificamos o usuário
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        adSendRequest('gpo_get_sec_filtering', { gpo_guid: guid }, (r) => {
+            alert('Filtragem de segurança requer modificação de ACL.\nUse samba-tool ntacl ou dsacl para adicionar "' + principal + '" diretamente.');
+        });
+    };
+
+    window.adRemoveSecurityFilter = function(principal) {
+        alert('Para remover "' + principal + '", use samba-tool ntacl ou dsacl diretamente no servidor.');
+    };
+
+    window.adApplyWMIFilter = function() {
+        const guid = AD.selectedGPO && AD.selectedGPO.guid;
+        if (!guid) return;
+        const sel = document.getElementById('adGPO-wmiFilterSel');
+        const dn  = sel ? sel.value : '';
+        adSendRequest('gpo_set_wmi_filter', { gpo_guid: guid, wmi_filter_dn: dn }, (r) => {
+            if (r && r.ok) {
+                const cur = document.getElementById('adGPO-wmiCurrent');
+                if (cur) cur.textContent = dn ? 'Atual: ' + dn : 'Nenhum filtro WMI aplicado';
+                alert('Filtro WMI ' + (dn ? 'aplicado' : 'removido') + '!');
+            } else alert('Erro: ' + ((r && r.error) || 'falha'));
+        });
+    };
+
+    window.adNewWMIFilterModal = function() {
+        document.getElementById('adWMI-name').value  = '';
+        document.getElementById('adWMI-desc').value  = '';
+        document.getElementById('adWMI-query').value = '';
+        showModal('adWMIFilterModal');
+    };
+
+    window.adCreateWMIFilter = function() {
+        const name  = document.getElementById('adWMI-name').value.trim();
+        const desc  = document.getElementById('adWMI-desc').value.trim();
+        const query = document.getElementById('adWMI-query').value.trim();
+        if (!name || !query) { alert('Nome e Query são obrigatórios.'); return; }
+        adSendRequest('gpo_create_wmi_filter', { name, description: desc, query }, (r) => {
+            if (r && r.ok) {
+                adCloseModal('adWMIFilterModal');
+                const guid = AD.selectedGPO && AD.selectedGPO.guid;
+                if (guid) adLoadFilteringTab(guid);
+            } else alert('Erro: ' + ((r && r.output) || (r && r.error) || 'falha'));
         });
     };
 

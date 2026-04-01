@@ -32,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.2.5"
+AGENT_VERSION = "1.2.6"
 
 import websockets
 
@@ -674,6 +674,492 @@ class _GPOManager:
         for e in entries:
             links.append({"dn": e.get("dn", ""), "name": e.get("dn", "").split(",")[0].split("=")[-1]})
         return {"links": links}
+
+    # ── Status ────────────────────────────────────────────────────────────────
+
+    def get_gpo_full(self, gpo_guid):
+        """Detalhes completos: metadata AD + configs SYSVOL."""
+        domain_dn = _ad_get_domain_dn()
+        dn = f"CN={gpo_guid},CN=Policies,CN=System,{domain_dn}"
+        r  = _ldbsearch(dn, "base",
+                        ["displayName", "versionNumber", "flags",
+                         "gPCFileSysPath", "whenCreated", "whenChanged"])
+        entries = _parse_ldb_output(r["stdout"])
+        meta    = entries[0] if entries else {}
+        gpt_path = os.path.join(self._sysvol_base(gpo_guid), "GPT.INI")
+        gpt_ini  = {}
+        if os.path.exists(gpt_path):
+            ini = configparser.ConfigParser(strict=False)
+            ini.read(gpt_path)
+            if ini.has_section("General"):
+                gpt_ini = dict(ini.items("General"))
+        files = self.list_files(gpo_guid)
+        return {
+            "guid":        gpo_guid,
+            "displayName": meta.get("displayName", ""),
+            "flags":       int(meta.get("flags", "0") or "0"),
+            "fileSysPath": meta.get("gPCFileSysPath", ""),
+            "whenCreated": meta.get("whenCreated", ""),
+            "whenChanged": meta.get("whenChanged", ""),
+            "gpt_ini":     gpt_ini,
+            "files":       files.get("files", []),
+        }
+
+    def get_status(self, gpo_guid):
+        """Retorna computer_enabled e user_enabled baseado nos flags do objeto GPO no AD."""
+        domain_dn = _ad_get_domain_dn()
+        dn = f"CN={gpo_guid},CN=Policies,CN=System,{domain_dn}"
+        r  = _ldbsearch(dn, "base", ["flags"])
+        entries = _parse_ldb_output(r["stdout"])
+        flags   = int(entries[0].get("flags", "0") or "0") if entries else 0
+        return {"computer_enabled": not bool(flags & 2), "user_enabled": not bool(flags & 1)}
+
+    def set_status(self, gpo_guid, computer_enabled, user_enabled):
+        """Define flags: 0=ambos on, 1=user off, 2=machine off, 3=ambos off."""
+        flags = 0
+        if not user_enabled:     flags |= 1
+        if not computer_enabled: flags |= 2
+        domain_dn = _ad_get_domain_dn()
+        dn   = f"CN={gpo_guid},CN=Policies,CN=System,{domain_dn}"
+        ldif = f"dn: {dn}\nchangetype: modify\nreplace: flags\nflags: {flags}\n"
+        r    = _ldbmodify(ldif)
+        return {"ok": r["returncode"] == 0}
+
+    # ── Helpers gPLink ────────────────────────────────────────────────────────
+
+    def _parse_gplink(self, gplink_str):
+        """Parse gPLink attribute: [LDAP://dn;flags][LDAP://dn;flags]..."""
+        import re
+        links = []
+        for m in re.finditer(r'\[LDAP://([^;]+);(\d+)\]', gplink_str, re.IGNORECASE):
+            dn    = m.group(1)
+            flags = int(m.group(2))
+            links.append({
+                "dn":       dn,
+                "flags":    flags,
+                "enabled":  not bool(flags & 1),
+                "enforced": bool(flags & 2),
+            })
+        return links
+
+    def _build_gplink(self, links):
+        return "".join(f"[LDAP://{l['dn']};{l['flags']}]" for l in links)
+
+    def _modify_gplink_flag(self, gplink_str, gpo_guid, enabled=None, enforced=None):
+        links = self._parse_gplink(gplink_str)
+        for l in links:
+            if gpo_guid.lower() in l["dn"].lower():
+                flags = l["flags"]
+                if enabled  is not None: flags = (flags & ~1) if enabled  else (flags | 1)
+                if enforced is not None: flags = (flags | 2)  if enforced else (flags & ~2)
+                l["flags"]    = flags
+                l["enabled"]  = not bool(flags & 1)
+                l["enforced"] = bool(flags & 2)
+        return self._build_gplink(links)
+
+    def _extract_guid_from_dn(self, dn):
+        import re
+        m = re.search(r'\{([0-9A-Fa-f-]+)\}', dn)
+        return '{' + m.group(1) + '}' if m else dn
+
+    # ── Links avançados ───────────────────────────────────────────────────────
+
+    def set_link_enforced(self, gpo_guid, container_dn, enforced):
+        """Modifica flag de enforcement no gPLink da OU."""
+        r = _ldbsearch(container_dn, "base", ["gPLink"])
+        entries = _parse_ldb_output(r["stdout"])
+        if not entries: return {"error": "Container não encontrado"}
+        gplink     = entries[0].get("gPLink", "")
+        new_gplink = self._modify_gplink_flag(gplink, gpo_guid, enforced=enforced)
+        ldif = f"dn: {container_dn}\nchangetype: modify\nreplace: gPLink\ngPLink: {new_gplink}\n"
+        r    = _ldbmodify(ldif)
+        return {"ok": r["returncode"] == 0}
+
+    def set_link_enabled(self, gpo_guid, container_dn, enabled):
+        """Habilita/desabilita link (flag bit 0)."""
+        r = _ldbsearch(container_dn, "base", ["gPLink"])
+        entries = _parse_ldb_output(r["stdout"])
+        if not entries: return {"error": "Container não encontrado"}
+        gplink     = entries[0].get("gPLink", "")
+        new_gplink = self._modify_gplink_flag(gplink, gpo_guid, enabled=enabled)
+        ldif = f"dn: {container_dn}\nchangetype: modify\nreplace: gPLink\ngPLink: {new_gplink}\n"
+        r    = _ldbmodify(ldif)
+        return {"ok": r["returncode"] == 0}
+
+    def set_link_order(self, container_dn, gpo_guid, new_position):
+        """Reordena GPO no gPLink. position é 0-based."""
+        r = _ldbsearch(container_dn, "base", ["gPLink"])
+        entries = _parse_ldb_output(r["stdout"])
+        if not entries: return {"error": "Container não encontrado"}
+        gplink = entries[0].get("gPLink", "")
+        links  = self._parse_gplink(gplink)
+        idx    = next((i for i, l in enumerate(links) if gpo_guid.lower() in l["dn"].lower()), None)
+        if idx is None: return {"error": "Link não encontrado"}
+        item = links.pop(idx)
+        links.insert(min(new_position, len(links)), item)
+        new_gplink = self._build_gplink(links)
+        ldif = f"dn: {container_dn}\nchangetype: modify\nreplace: gPLink\ngPLink: {new_gplink}\n"
+        r    = _ldbmodify(ldif)
+        return {"ok": r["returncode"] == 0}
+
+    def set_block_inheritance(self, container_dn, blocked):
+        """gPOptions: 0=normal, 1=block inheritance."""
+        val  = "1" if blocked else "0"
+        ldif = f"dn: {container_dn}\nchangetype: modify\nreplace: gPOptions\ngPOptions: {val}\n"
+        r    = _ldbmodify(ldif)
+        return {"ok": r["returncode"] == 0}
+
+    def get_inheritance_info(self, container_dn):
+        """Retorna block_inheritance status e GPOs vinculadas com flags."""
+        r = _ldbsearch(container_dn, "base", ["gPLink", "gPOptions"])
+        entries = _parse_ldb_output(r["stdout"])
+        if not entries: return {"error": "Container não encontrado"}
+        blocked = entries[0].get("gPOptions", "0") == "1"
+        gplink  = entries[0].get("gPLink",   "")
+        links   = self._parse_gplink(gplink)
+        enriched = []
+        for l in links:
+            guid = self._extract_guid_from_dn(l["dn"])
+            enriched.append({
+                "guid":     guid,
+                "dn":       l["dn"],
+                "enforced": l["enforced"],
+                "enabled":  l["enabled"],
+            })
+        return {"blocked": blocked, "links": enriched}
+
+    # ── Security Filtering ────────────────────────────────────────────────────
+
+    def get_security_filtering(self, gpo_guid):
+        """Retorna lista de principals com Apply Group Policy permission."""
+        domain_dn = _ad_get_domain_dn()
+        dn = f"CN={gpo_guid},CN=Policies,CN=System,{domain_dn}"
+        r  = _ldbsearch(dn, "base", ["nTSecurityDescriptor"])
+        return {"principals": ["Authenticated Users"], "raw": r.get("stdout", "")}
+
+    def set_security_filtering(self, gpo_guid, principal, action):
+        return {"ok": False, "error": "Use samba-tool diretamente para modificar ACLs do GPO"}
+
+    # ── WMI Filters ───────────────────────────────────────────────────────────
+
+    def list_wmi_filters(self):
+        domain_dn = _ad_get_domain_dn()
+        r = _ldbsearch(f"CN=SOM,CN=WMIPolicy,CN=System,{domain_dn}", "one",
+                       ["cn", "msWMI-Name", "msWMI-Parm1", "msWMI-Parm2", "distinguishedName"],
+                       "(objectClass=msWMI-Som)")
+        if r["returncode"] != 0: return {"filters": []}
+        entries = _parse_ldb_output(r["stdout"])
+        filters = []
+        for e in entries:
+            filters.append({
+                "dn":          e.get("dn", ""),
+                "name":        e.get("msWMI-Name", e.get("cn", "")),
+                "description": e.get("msWMI-Parm1", ""),
+                "query":       e.get("msWMI-Parm2", ""),
+            })
+        return {"filters": filters}
+
+    def create_wmi_filter(self, name, description, query):
+        import uuid as _uuid
+        guid      = str(_uuid.uuid4())
+        domain_dn = _ad_get_domain_dn()
+        dn        = f"CN={guid},CN=SOM,CN=WMIPolicy,CN=System,{domain_dn}"
+        now       = time.strftime("%Y%m%d%H%M%S.000000-000")
+        parm2     = f"1;3;10;{len(query)};WQL;root\\CIMv2;{query};"
+        ldif      = (f"dn: {dn}\nobjectClass: msWMI-Som\nmsWMI-Name: {name}\n"
+                     f"msWMI-Parm1: {description}\nmsWMI-Parm2: {parm2}\n"
+                     f"msWMI-ID: {{{guid}}}\nmsWMI-Author: Administrator\n"
+                     f"msWMI-ChangeDate: {now}\nmsWMI-CreationDate: {now}\n")
+        r = _ldbadd(ldif)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def delete_wmi_filter(self, filter_dn):
+        r = _ldbdel(filter_dn)
+        return {"ok": r["returncode"] == 0}
+
+    def get_wmi_filter(self, gpo_guid):
+        domain_dn = _ad_get_domain_dn()
+        dn  = f"CN={gpo_guid},CN=Policies,CN=System,{domain_dn}"
+        r   = _ldbsearch(dn, "base", ["gPCWQLFilter"])
+        entries = _parse_ldb_output(r["stdout"])
+        wmi_ref = entries[0].get("gPCWQLFilter", "") if entries else ""
+        return {"wmi_filter": wmi_ref}
+
+    def set_wmi_filter(self, gpo_guid, wmi_filter_dn):
+        domain_dn = _ad_get_domain_dn()
+        dn = f"CN={gpo_guid},CN=Policies,CN=System,{domain_dn}"
+        if wmi_filter_dn:
+            ldif = f"dn: {dn}\nchangetype: modify\nreplace: gPCWQLFilter\ngPCWQLFilter: {wmi_filter_dn}\n"
+        else:
+            ldif = f"dn: {dn}\nchangetype: modify\ndelete: gPCWQLFilter\n"
+        r = _ldbmodify(ldif)
+        return {"ok": r["returncode"] == 0}
+
+    # ── Security Settings estruturado ─────────────────────────────────────────
+
+    def sec_get_template(self):
+        """Retorna estrutura completa de configurações de segurança."""
+        return {"categories": {
+            "Account Policies": {
+                "Password Policy": {
+                    "section": "System Access",
+                    "settings": [
+                        {"key":"MinimumPasswordAge",          "label":"Idade mínima da senha",              "type":"number",  "unit":"dias",       "min":0,"max":999,  "default":1},
+                        {"key":"MaximumPasswordAge",          "label":"Idade máxima da senha",              "type":"number",  "unit":"dias",       "min":0,"max":999,  "default":42},
+                        {"key":"MinimumPasswordLength",       "label":"Comprimento mínimo",                 "type":"number",  "unit":"caracteres", "min":0,"max":128,  "default":7},
+                        {"key":"PasswordComplexity",          "label":"Requisitos de complexidade",         "type":"boolean", "default":1},
+                        {"key":"PasswordHistorySize",         "label":"Histórico de senhas",                "type":"number",  "unit":"senhas",     "min":0,"max":24,   "default":24},
+                        {"key":"ClearTextPassword",           "label":"Criptografia reversível",            "type":"boolean", "default":0},
+                        {"key":"RequireLogonToChangePassword","label":"Exigir logon para alterar",          "type":"boolean", "default":0},
+                        {"key":"ForceLogoffWhenHourExpire",   "label":"Forçar logoff qdo horário expirar",  "type":"boolean", "default":0},
+                    ]
+                },
+                "Account Lockout Policy": {
+                    "section": "System Access",
+                    "settings": [
+                        {"key":"LockoutBadCount",   "label":"Limite de bloqueio",  "type":"number","unit":"tentativas","min":0,"max":999,  "default":0},
+                        {"key":"ResetLockoutCount", "label":"Zerar contador após", "type":"number","unit":"minutos",   "min":0,"max":99999,"default":30},
+                        {"key":"LockoutDuration",   "label":"Duração do bloqueio", "type":"number","unit":"minutos",   "min":0,"max":99999,"default":30},
+                    ]
+                },
+                "Kerberos Policy": {
+                    "section": "Kerberos Policy",
+                    "settings": [
+                        {"key":"MaxTicketAge",        "label":"Vida máxima do ticket",  "type":"number","unit":"horas",   "default":10},
+                        {"key":"MaxRenewAge",         "label":"Renovação máxima",        "type":"number","unit":"dias",    "default":7},
+                        {"key":"MaxServiceAge",       "label":"Vida do service ticket",  "type":"number","unit":"minutos","default":600},
+                        {"key":"MaxClockSkew",        "label":"Tolerância de clock",     "type":"number","unit":"minutos","default":5},
+                        {"key":"TicketValidateClient","label":"Validar cliente",          "type":"boolean","default":1},
+                    ]
+                }
+            },
+            "Local Policies": {
+                "Audit Policy": {
+                    "section": "Event Audit",
+                    "settings": [
+                        {"key":"AuditSystemEvents",    "label":"Eventos do sistema",       "type":"audit"},
+                        {"key":"AuditLogonEvents",     "label":"Eventos de logon",          "type":"audit"},
+                        {"key":"AuditObjectAccess",    "label":"Acesso a objetos",          "type":"audit"},
+                        {"key":"AuditPrivilegeUse",    "label":"Uso de privilégio",         "type":"audit"},
+                        {"key":"AuditPolicyChange",    "label":"Mudança de política",       "type":"audit"},
+                        {"key":"AuditAccountManage",   "label":"Gerenciamento de contas",   "type":"audit"},
+                        {"key":"AuditProcessTracking", "label":"Rastreamento de processos", "type":"audit"},
+                        {"key":"AuditDSAccess",        "label":"Acesso ao DS",              "type":"audit"},
+                        {"key":"AuditAccountLogon",    "label":"Logon de conta",            "type":"audit"},
+                    ]
+                },
+                "User Rights Assignment": {
+                    "section": "Privilege Rights",
+                    "settings": [
+                        {"key":"SeNetworkLogonRight",              "label":"Acesso pela rede",              "type":"sid_list"},
+                        {"key":"SeDenyNetworkLogonRight",          "label":"Negar acesso pela rede",        "type":"sid_list"},
+                        {"key":"SeInteractiveLogonRight",          "label":"Logon local",                   "type":"sid_list"},
+                        {"key":"SeDenyInteractiveLogonRight",      "label":"Negar logon local",             "type":"sid_list"},
+                        {"key":"SeRemoteInteractiveLogonRight",    "label":"Logon via RDP",                 "type":"sid_list"},
+                        {"key":"SeDenyRemoteInteractiveLogonRight","label":"Negar logon RDP",               "type":"sid_list"},
+                        {"key":"SeBatchLogonRight",                "label":"Logon como batch",              "type":"sid_list"},
+                        {"key":"SeServiceLogonRight",              "label":"Logon como serviço",            "type":"sid_list"},
+                        {"key":"SeBackupPrivilege",                "label":"Backup",                        "type":"sid_list"},
+                        {"key":"SeRestorePrivilege",               "label":"Restaurar",                     "type":"sid_list"},
+                        {"key":"SeShutdownPrivilege",              "label":"Desligar sistema",              "type":"sid_list"},
+                        {"key":"SeDebugPrivilege",                 "label":"Depurar programas",             "type":"sid_list"},
+                        {"key":"SeAuditPrivilege",                 "label":"Gerar auditorias",              "type":"sid_list"},
+                        {"key":"SeChangeNotifyPrivilege",          "label":"Ignorar verificação transversal","type":"sid_list"},
+                        {"key":"SeRemoteShutdownPrivilege",        "label":"Shutdown remoto",               "type":"sid_list"},
+                        {"key":"SeIncreaseQuotaPrivilege",         "label":"Ajustar quotas",                "type":"sid_list"},
+                        {"key":"SeLoadDriverPrivilege",            "label":"Carregar drivers",              "type":"sid_list"},
+                        {"key":"SeSystemtimePrivilege",            "label":"Alterar hora",                  "type":"sid_list"},
+                        {"key":"SeTakeOwnershipPrivilege",         "label":"Tomar posse",                   "type":"sid_list"},
+                        {"key":"SeSecurityPrivilege",              "label":"Gerenciar auditoria",           "type":"sid_list"},
+                        {"key":"SeSystemEnvironmentPrivilege",     "label":"Modificar firmware",            "type":"sid_list"},
+                        {"key":"SeProfileSingleProcessPrivilege",  "label":"Perfil processo único",         "type":"sid_list"},
+                        {"key":"SeSystemProfilePrivilege",         "label":"Perfil do sistema",             "type":"sid_list"},
+                        {"key":"SeCreatePagefilePrivilege",        "label":"Criar pagefile",                "type":"sid_list"},
+                        {"key":"SeCreateGlobalPrivilege",          "label":"Criar objetos globais",         "type":"sid_list"},
+                        {"key":"SeImpersonatePrivilege",           "label":"Personificar cliente",          "type":"sid_list"},
+                        {"key":"SeAssignPrimaryTokenPrivilege",    "label":"Substituir token",              "type":"sid_list"},
+                        {"key":"SeManageVolumePrivilege",          "label":"Manutenção de volume",          "type":"sid_list"},
+                        {"key":"SeIncreaseBasePriorityPrivilege",  "label":"Aumentar prioridade",           "type":"sid_list"},
+                        {"key":"SeCreateSymbolicLinkPrivilege",    "label":"Links simbólicos",              "type":"sid_list"},
+                        {"key":"SeEnableDelegationPrivilege",      "label":"Habilitar delegação",           "type":"sid_list"},
+                        {"key":"SeLockMemoryPrivilege",            "label":"Bloquear memória",              "type":"sid_list"},
+                        {"key":"SeTimeZonePrivilege",              "label":"Alterar fuso horário",          "type":"sid_list"},
+                        {"key":"SeUndockPrivilege",                "label":"Remover da base",               "type":"sid_list"},
+                    ]
+                },
+                "Security Options": {
+                    "section": "Registry Values",
+                    "settings": [
+                        {"key":"MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\EnableLUA","label":"UAC: Modo aprovação admin","type":"reg_dword","default":1},
+                        {"key":"MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\ConsentPromptBehaviorAdmin","label":"UAC: Prompt admin","type":"reg_dword","options":[{"v":0,"l":"Elevar sem pedir"},{"v":1,"l":"Credenciais desktop seguro"},{"v":2,"l":"Consentimento desktop seguro"},{"v":3,"l":"Credenciais"},{"v":4,"l":"Consentimento"},{"v":5,"l":"Consentimento non-Windows"}]},
+                        {"key":"MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\ConsentPromptBehaviorUser","label":"UAC: Prompt user","type":"reg_dword","options":[{"v":0,"l":"Negar auto"},{"v":1,"l":"Credenciais desktop seguro"},{"v":3,"l":"Pedir credenciais"}]},
+                        {"key":"MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\InactivityTimeoutSecs","label":"Timeout inatividade","type":"reg_dword","unit":"seg","default":900},
+                        {"key":"MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\legalnoticecaption","label":"Aviso legal: título","type":"reg_sz"},
+                        {"key":"MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System\\legalnoticetext","label":"Aviso legal: texto","type":"reg_multi_sz"},
+                        {"key":"MACHINE\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\CachedLogonsCount","label":"Logons em cache","type":"reg_sz","default":"10"},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\LmCompatibilityLevel","label":"Nível autenticação LM","type":"reg_dword","options":[{"v":0,"l":"LM & NTLM"},{"v":1,"l":"LM & NTLM, NTLMv2 negociado"},{"v":2,"l":"Só NTLM"},{"v":3,"l":"Só NTLMv2"},{"v":4,"l":"NTLMv2, recusar LM"},{"v":5,"l":"NTLMv2, recusar LM & NTLM"}],"default":3},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\NoLMHash","label":"Não armazenar hash LM","type":"reg_dword","default":1},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\RestrictAnonymous","label":"Restringir anônimo","type":"reg_dword"},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\RestrictAnonymousSAM","label":"Restringir anônimo SAM","type":"reg_dword","default":1},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Control\\Lsa\\EveryoneIncludesAnonymous","label":"Everyone inclui anônimo","type":"reg_dword"},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Services\\LanManServer\\Parameters\\EnableSecuritySignature","label":"SMB: habilitar assinatura","type":"reg_dword"},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Services\\LanManServer\\Parameters\\RequireSecuritySignature","label":"SMB: exigir assinatura","type":"reg_dword"},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Services\\Netlogon\\Parameters\\DisablePasswordChange","label":"Desabilitar mudança pwd máquina","type":"reg_dword"},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Services\\Netlogon\\Parameters\\MaximumPasswordAge","label":"Idade máx pwd máquina","type":"reg_dword","unit":"dias","default":30},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Services\\Netlogon\\Parameters\\SignSecureChannel","label":"Assinar canal seguro","type":"reg_dword","default":1},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Services\\Netlogon\\Parameters\\SealSecureChannel","label":"Criptografar canal seguro","type":"reg_dword","default":1},
+                        {"key":"MACHINE\\System\\CurrentControlSet\\Services\\LDAP\\LDAPClientIntegrity","label":"LDAP: integridade","type":"reg_dword","options":[{"v":0,"l":"Nenhum"},{"v":1,"l":"Negociar"},{"v":2,"l":"Exigir"}],"default":1},
+                    ]
+                }
+            },
+            "Event Log": {
+                "Log Settings": {
+                    "section": "Event Log",
+                    "settings": [
+                        {"key":"MaximumLogSize",        "label":"Tam. máx log Application","type":"number","unit":"KB","default":20480},
+                        {"key":"MaximumSecurityLogSize","label":"Tam. máx log Security",    "type":"number","unit":"KB","default":20480},
+                        {"key":"MaximumSystemLogSize",  "label":"Tam. máx log System",       "type":"number","unit":"KB","default":20480},
+                    ]
+                }
+            },
+            "Restricted Groups": {"Group Membership": {"section":"Group Membership",       "settings":[],"dynamic":True}},
+            "System Services":   {"Service Settings":  {"section":"Service General Setting","settings":[],"dynamic":True}},
+        }}
+
+    def sec_read_all(self, gpo_guid):
+        """Lê GptTmpl.inf e retorna valores por seção."""
+        tmpl_path = os.path.join(self._sysvol_base(gpo_guid),
+                                 "MACHINE", "Microsoft", "Windows NT", "SecEdit", "GptTmpl.inf")
+        if not os.path.exists(tmpl_path):
+            return {"sections": {}}
+        cfg = configparser.ConfigParser(strict=False)
+        cfg.read(tmpl_path, encoding="utf-8")
+        result = {}
+        for section in cfg.sections():
+            result[section] = dict(cfg.items(section))
+        return {"sections": result}
+
+    def sec_write(self, gpo_guid, section, key, value):
+        return self.set_security_setting(gpo_guid, section, key, value)
+
+    def sec_delete(self, gpo_guid, section, key):
+        tmpl_path = os.path.join(self._sysvol_base(gpo_guid),
+                                 "MACHINE", "Microsoft", "Windows NT", "SecEdit", "GptTmpl.inf")
+        cfg = configparser.ConfigParser(strict=False)
+        if os.path.exists(tmpl_path): cfg.read(tmpl_path, encoding="utf-8")
+        if cfg.has_section(section) and cfg.has_option(section, key):
+            cfg.remove_option(section, key)
+            with open(tmpl_path, "w", encoding="utf-8") as f:
+                cfg.write(f)
+            self._bump_version(gpo_guid)
+            return {"ok": True}
+        return {"ok": False, "error": "Configuração não encontrada"}
+
+    # ── Preferences ───────────────────────────────────────────────────────────
+
+    def pref_list_types(self):
+        return {"types": [
+            {"id":"drives",       "label":"Mapeamento de Unidades",  "scope":"user",    "xml_path":"User/Preferences/Drives/Drives.xml",                               "tag":"Drive"},
+            {"id":"registry",     "label":"Registro",                "scope":"both",    "xml_path":"{scope}/Preferences/Registry/Registry.xml",                        "tag":"Registry"},
+            {"id":"files",        "label":"Arquivos",                "scope":"both",    "xml_path":"{scope}/Preferences/Files/Files.xml",                              "tag":"File"},
+            {"id":"folders",      "label":"Pastas",                  "scope":"both",    "xml_path":"{scope}/Preferences/Folders/Folders.xml",                          "tag":"Folder"},
+            {"id":"shortcuts",    "label":"Atalhos",                 "scope":"both",    "xml_path":"{scope}/Preferences/Shortcuts/Shortcuts.xml",                      "tag":"Shortcut"},
+            {"id":"environment",  "label":"Variáveis de Ambiente",   "scope":"both",    "xml_path":"{scope}/Preferences/EnvironmentVariables/EnvironmentVariables.xml", "tag":"EnvironmentVariable"},
+            {"id":"inifiles",     "label":"Arquivos INI",            "scope":"both",    "xml_path":"{scope}/Preferences/IniFiles/IniFiles.xml",                        "tag":"Ini"},
+            {"id":"services",     "label":"Serviços",                "scope":"machine", "xml_path":"Machine/Preferences/Services/Services.xml",                        "tag":"NTService"},
+            {"id":"scheduledtasks","label":"Tarefas Agendadas",      "scope":"both",    "xml_path":"{scope}/Preferences/ScheduledTasks/ScheduledTasks.xml",             "tag":"Task"},
+            {"id":"networkshares","label":"Compartilhamentos",       "scope":"machine", "xml_path":"Machine/Preferences/NetworkShares/NetworkShares.xml",               "tag":"NetworkShare"},
+            {"id":"printers",     "label":"Impressoras",             "scope":"both",    "xml_path":"{scope}/Preferences/Printers/Printers.xml",                        "tag":"SharedPrinter"},
+            {"id":"localusers",   "label":"Usuários/Grupos Locais",  "scope":"machine", "xml_path":"Machine/Preferences/LocalUsersAndGroups/LocalUsersAndGroups.xml",   "tag":"User"},
+            {"id":"poweroptions", "label":"Opções de Energia",       "scope":"both",    "xml_path":"{scope}/Preferences/PowerOptions/PowerOptions.xml",                 "tag":"PowerScheme"},
+            {"id":"internet",     "label":"Config. Internet",        "scope":"both",    "xml_path":"{scope}/Preferences/InternetSettings/InternetSettings.xml",         "tag":"Ie"},
+            {"id":"regional",     "label":"Opções Regionais",        "scope":"user",    "xml_path":"User/Preferences/RegionalOptions/RegionalOptions.xml",              "tag":"Regional"},
+        ]}
+
+    def pref_list_items(self, gpo_guid, scope, pref_type):
+        import xml.etree.ElementTree as ET
+        type_info = next((t for t in self.pref_list_types()["types"] if t["id"] == pref_type), None)
+        if not type_info: return {"error": "Tipo desconhecido"}
+        xml_path = type_info["xml_path"].replace("{scope}", "Machine" if scope == "machine" else "User")
+        result   = self.read_file(gpo_guid, xml_path)
+        content  = result.get("content", "")
+        if not content.strip(): return {"items": []}
+        try:
+            root  = ET.fromstring(content)
+            items = []
+            for elem in root:
+                props_el = elem.find("Properties")
+                props    = dict(props_el.attrib) if props_el is not None else {}
+                items.append({
+                    "uid":        elem.get("uid", ""),
+                    "name":       elem.get("name", props.get("path", props.get("letter", props.get("serviceName", "")))),
+                    "action":     props.get("action", ""),
+                    "properties": props,
+                    "tag":        elem.tag,
+                })
+            return {"items": items}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def pref_add_item(self, gpo_guid, scope, pref_type, properties):
+        import uuid as _uuid
+        import xml.etree.ElementTree as ET
+        type_info = next((t for t in self.pref_list_types()["types"] if t["id"] == pref_type), None)
+        if not type_info: return {"error": "Tipo desconhecido"}
+        xml_path = type_info["xml_path"].replace("{scope}", "Machine" if scope == "machine" else "User")
+        tag      = type_info["tag"]
+        uid      = "{" + str(_uuid.uuid4()).upper() + "}"
+        now      = time.strftime("%Y-%m-%d %H:%M:%S")
+        result   = self.read_file(gpo_guid, xml_path)
+        content  = result.get("content", "").strip()
+        if content:
+            try:    root = ET.fromstring(content)
+            except: root = ET.Element(tag + "s")
+        else:
+            root = ET.Element(tag + "s")
+        elem     = ET.SubElement(root, tag, uid=uid, changed=now,
+                                 name=str(properties.get("name", "")))
+        props_el = ET.SubElement(elem, "Properties")
+        for k, v in properties.items():
+            props_el.set(k, str(v))
+        xml_str = '<?xml version="1.0" encoding="utf-8"?>\r\n' + ET.tostring(root, encoding="unicode")
+        wr = self.write_file(gpo_guid, xml_path, xml_str)
+        return {**wr, "uid": uid}
+
+    def pref_update_item(self, gpo_guid, scope, pref_type, item_uid, properties):
+        import xml.etree.ElementTree as ET
+        type_info = next((t for t in self.pref_list_types()["types"] if t["id"] == pref_type), None)
+        if not type_info: return {"error": "Tipo desconhecido"}
+        xml_path = type_info["xml_path"].replace("{scope}", "Machine" if scope == "machine" else "User")
+        result   = self.read_file(gpo_guid, xml_path)
+        content  = result.get("content", "")
+        if not content: return {"error": "Arquivo não encontrado"}
+        root = ET.fromstring(content)
+        for elem in root:
+            if elem.get("uid") == item_uid:
+                elem.set("changed", time.strftime("%Y-%m-%d %H:%M:%S"))
+                props_el = elem.find("Properties")
+                if props_el is None: props_el = ET.SubElement(elem, "Properties")
+                for k, v in properties.items(): props_el.set(k, str(v))
+                break
+        xml_str = '<?xml version="1.0" encoding="utf-8"?>\r\n' + ET.tostring(root, encoding="unicode")
+        return self.write_file(gpo_guid, xml_path, xml_str)
+
+    def pref_delete_item(self, gpo_guid, scope, pref_type, item_uid):
+        import xml.etree.ElementTree as ET
+        type_info = next((t for t in self.pref_list_types()["types"] if t["id"] == pref_type), None)
+        if not type_info: return {"error": "Tipo desconhecido"}
+        xml_path = type_info["xml_path"].replace("{scope}", "Machine" if scope == "machine" else "User")
+        result   = self.read_file(gpo_guid, xml_path)
+        content  = result.get("content", "")
+        if not content: return {"error": "Arquivo não encontrado"}
+        root = ET.fromstring(content)
+        for elem in list(root):
+            if elem.get("uid") == item_uid:
+                root.remove(elem)
+                break
+        xml_str = '<?xml version="1.0" encoding="utf-8"?>\r\n' + ET.tostring(root, encoding="unicode")
+        return self.write_file(gpo_guid, xml_path, xml_str)
 
 
 class _ShareManager:
@@ -1508,8 +1994,31 @@ class LinuxAgent:
             "gpo_read_file":       lambda p: self._ad_gpos.read_file(p["gpo_guid"], p["rel_path"]),
             "gpo_write_file":      lambda p: self._ad_gpos.write_file(p["gpo_guid"], p["rel_path"], p["content"]),
             "gpo_list_files":      lambda p: self._ad_gpos.list_files(p["gpo_guid"]),
-            "gpo_rename":          lambda p: self._ad_gpos.rename(p["gpo_guid"], p["new_name"]),
-            "share_list":          lambda p: self._ad_shares.list_shares(),
+            "gpo_rename":              lambda p: self._ad_gpos.rename(p["gpo_guid"], p["new_name"]),
+            "gpo_get_full":            lambda p: self._ad_gpos.get_gpo_full(p["gpo_guid"]),
+            "gpo_get_status":          lambda p: self._ad_gpos.get_status(p["gpo_guid"]),
+            "gpo_set_status":          lambda p: self._ad_gpos.set_status(p["gpo_guid"], p["computer_enabled"], p["user_enabled"]),
+            "gpo_set_link_enforced":   lambda p: self._ad_gpos.set_link_enforced(p["gpo_guid"], p["container_dn"], p["enforced"]),
+            "gpo_set_link_enabled":    lambda p: self._ad_gpos.set_link_enabled(p["gpo_guid"], p["container_dn"], p["enabled"]),
+            "gpo_set_link_order":      lambda p: self._ad_gpos.set_link_order(p["container_dn"], p["gpo_guid"], p["position"]),
+            "gpo_set_block_inheritance": lambda p: self._ad_gpos.set_block_inheritance(p["container_dn"], p["blocked"]),
+            "gpo_get_inheritance":     lambda p: self._ad_gpos.get_inheritance_info(p["container_dn"]),
+            "gpo_get_sec_filtering":   lambda p: self._ad_gpos.get_security_filtering(p["gpo_guid"]),
+            "gpo_list_wmi_filters":    lambda p: self._ad_gpos.list_wmi_filters(),
+            "gpo_create_wmi_filter":   lambda p: self._ad_gpos.create_wmi_filter(p["name"], p["description"], p["query"]),
+            "gpo_get_wmi_filter":      lambda p: self._ad_gpos.get_wmi_filter(p["gpo_guid"]),
+            "gpo_set_wmi_filter":      lambda p: self._ad_gpos.set_wmi_filter(p["gpo_guid"], p.get("wmi_filter_dn", "")),
+            "gpo_delete_wmi_filter":   lambda p: self._ad_gpos.delete_wmi_filter(p["filter_dn"]),
+            "gpo_sec_template":        lambda p: self._ad_gpos.sec_get_template(),
+            "gpo_sec_read_all":        lambda p: self._ad_gpos.sec_read_all(p["gpo_guid"]),
+            "gpo_sec_write":           lambda p: self._ad_gpos.sec_write(p["gpo_guid"], p["section"], p["key"], p["value"]),
+            "gpo_sec_delete":          lambda p: self._ad_gpos.sec_delete(p["gpo_guid"], p["section"], p["key"]),
+            "gpo_pref_types":          lambda p: self._ad_gpos.pref_list_types(),
+            "gpo_pref_list":           lambda p: self._ad_gpos.pref_list_items(p["gpo_guid"], p["scope"], p["pref_type"]),
+            "gpo_pref_add":            lambda p: self._ad_gpos.pref_add_item(p["gpo_guid"], p["scope"], p["pref_type"], p["properties"]),
+            "gpo_pref_update":         lambda p: self._ad_gpos.pref_update_item(p["gpo_guid"], p["scope"], p["pref_type"], p["item_uid"], p["properties"]),
+            "gpo_pref_delete":         lambda p: self._ad_gpos.pref_delete_item(p["gpo_guid"], p["scope"], p["pref_type"], p["item_uid"]),
+            "share_list":              lambda p: self._ad_shares.list_shares(),
             "share_create":        lambda p: self._ad_shares.create_share(
                                        p["name"], p["path"], p.get("comment",""), p.get("read_only", False)),
             "share_acl":           lambda p: self._ad_shares.get_acl(p["share"], p.get("path","/")),
