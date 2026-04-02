@@ -341,13 +341,24 @@ class RelayServer:
             data={"agents": agents}))
 
     async def on_update_agent(self, ws, msg: Message):
-        """Repassa comando de atualização do viewer para o agente alvo."""
+        """Repassa comando de atualização do viewer para o agente alvo. Exige role admin."""
+        viewer_id = self.ws_to_viewer.get(ws)
+        if not viewer_id:
+            logger.warning("on_update_agent: remetente não é viewer registrado")
+            return
+        viewer = self.viewers.get(viewer_id)
+        if not viewer or viewer.role not in ("admin", "superadmin"):
+            logger.warning(
+                f"on_update_agent bloqueado: viewer {viewer_id[:12]} sem permissão "
+                f"(role={viewer.role if viewer else 'N/A'})"
+            )
+            return
         agent_id = msg.data.get("agent_id")
         if not agent_id or agent_id not in self.agents:
             return
         try:
             await self._send(self.agents[agent_id].websocket, msg.to_json())
-            logger.info(f"Comando update_agent enviado para {agent_id}")
+            logger.info(f"Comando update_agent enviado para {agent_id} por viewer {viewer_id[:12]}")
         except Exception as e:
             logger.error(f"Falha ao enviar update_agent: {e}")
 
@@ -404,6 +415,7 @@ class RelayServer:
             "viewer_id": viewer_id, "hostname": agent.hostname,
             "os_type": agent.os_type, "screen_width": agent.screen_width,
             "screen_height": agent.screen_height,
+            "viewer_role": self.viewers[viewer_id].role,
         }
         await self._send(ws, create_message(MessageType.CONNECT_ACCEPT, data=connect_data))
         await self._send(agent.websocket, create_message(MessageType.CONNECT_ACCEPT, data=connect_data))

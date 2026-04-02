@@ -91,7 +91,7 @@ def _is_admin(token_data: dict) -> bool:
         return False
     role = token_data.get("role", "")
     email = token_data.get("email", "")
-    return role in ("superadmin", "admin") or email == "app@rochaneto.com"
+    return role in ("superadmin", "admin")
 
 
 # ─── Rate limiting em memória (login, MFA) ───
@@ -202,6 +202,15 @@ class WebPanel:
             return None
         return token_data if _is_admin(token_data) else None
 
+    async def _check_profile_permission(self, token_data: dict, module: str, action: str) -> bool:
+        """Verifica permissão de perfil para usuários não-admin. Admins sempre passam."""
+        if _is_admin(token_data):
+            return True
+        perms = await self.db.get_user_permissions(token_data["user_id"])
+        if perms.get("*"):
+            return True
+        return bool(perms.get(module, {}).get(action, False))
+
     # ─── Páginas ───
 
     async def index(self, req):
@@ -212,6 +221,9 @@ class WebPanel:
         return resp
 
     async def admin_page(self, req):
+        token = req.query.get("token", "")
+        if not token or not _verify_token(token):
+            raise web.HTTPFound("/?redirect=admin")
         return web.FileResponse(os.path.join(STATIC_DIR, "admin.html"))
 
     # ─── API: Auth ───
@@ -342,7 +354,7 @@ class WebPanel:
 
     async def api_provision_agent(self, req):
         if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
 
         data = await req.json()
         nickname        = data.get("nickname", "").strip()
@@ -382,8 +394,11 @@ class WebPanel:
     # ─── API: Perfis ───
 
     async def api_get_profiles(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "profiles", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         profiles = await self.db.get_all_profiles()
         for p in profiles:
             for k, v in p.items():
@@ -428,8 +443,11 @@ class WebPanel:
         return web.json_response({"ok": True})
 
     async def api_get_profile_permissions(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "profiles", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         profile_id = int(req.match_info['profile_id'])
         perms = await self.db.get_profile_permissions(profile_id)
         return web.json_response(perms)
@@ -561,8 +579,11 @@ class WebPanel:
         return web.json_response(stats)
 
     async def api_agent_version(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "agents", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         import re
         agent_dir = os.path.join(os.path.dirname(__file__), 'static/agent')
         versions = {}
@@ -578,8 +599,11 @@ class WebPanel:
         return web.json_response(versions)
 
     async def api_agents(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "machines", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         agents = await self.db.get_all_agents_safe()
         for a in agents:
             for k, v in a.items():
@@ -588,8 +612,11 @@ class WebPanel:
         return web.json_response(agents)
 
     async def api_sessions(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "sessions", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         limit = int(req.query.get("limit", 100))
         agent_id = req.query.get("agent_id")
         sessions = await self.db.get_session_history(limit, agent_id)
@@ -600,8 +627,11 @@ class WebPanel:
         return web.json_response(sessions)
 
     async def api_active_sessions(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "sessions", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         sessions = await self.db.get_active_sessions()
         for s in sessions:
             for k, v in s.items():
@@ -639,9 +669,15 @@ class WebPanel:
             return web.json_response({"ok": True})
 
     async def api_update_agent_nickname(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "machines", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         agent_id = req.match_info['agent_id']
+        agent = await self.db.get_agent(agent_id)
+        if not agent:
+            return web.json_response({"ok": False, "error": "Agente não encontrado"}, status=404)
         data     = await req.json()
         nickname = data.get("nickname", "").strip()
         if not nickname:

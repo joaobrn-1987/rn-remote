@@ -32,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.3.9"
+AGENT_VERSION = "1.4.0"
 
 import websockets
 
@@ -345,6 +345,17 @@ def _load_sid_cache():
     _flush()
 
 
+def _escape_ldap_filter(value: str) -> str:
+    """Escapa caracteres especiais em valores de filtros LDAP (RFC 4515)."""
+    replacements = [
+        ("\\", "\\5c"), ("*", "\\2a"), ("(", "\\28"), (")", "\\29"),
+        ("\x00", "\\00"),
+    ]
+    for ch, esc in replacements:
+        value = value.replace(ch, esc)
+    return value
+
+
 def _ad_get_realm():
     cfg = configparser.ConfigParser(strict=False)
     cfg.read(os.path.join(SAMBA_ETC, "smb.conf"))
@@ -404,7 +415,7 @@ class _UserManager:
 
     def get_user(self, username):
         r = _ldbsearch(_ad_get_domain_dn(), "sub", self._USER_ATTRS,
-                       f"(sAMAccountName={username})")
+                       f"(sAMAccountName={_escape_ldap_filter(username)})")
         if r["returncode"] != 0:
             return {"error": r["stderr"]}
         entries = _parse_ldb_output(r["stdout"])
@@ -509,7 +520,7 @@ class _GroupManager:
     def get_group(self, groupname):
         attrs = ["cn","sAMAccountName","description","distinguishedName",
                  "member","groupType","whenCreated","gidNumber","managedBy"]
-        r = _ldbsearch(_ad_get_domain_dn(), "sub", attrs, f"(sAMAccountName={groupname})")
+        r = _ldbsearch(_ad_get_domain_dn(), "sub", attrs, f"(sAMAccountName={_escape_ldap_filter(groupname)})")
         if r["returncode"] != 0: return {"error": r["stderr"]}
         entries = _parse_ldb_output(r["stdout"])
         if not entries: return {"error": "Grupo não encontrado"}
@@ -2104,6 +2115,7 @@ class LinuxAgent:
 
         self.ws = None
         self.session_id: str | None = None
+        self.viewer_role: str = ""
         self.shell: ShellSession | None = None
         self._shell_reader_task: asyncio.Task | None = None
         self._running = True
@@ -2151,6 +2163,7 @@ class LinuxAgent:
                 self._stop_shell()
                 self._stop_vconsole()
                 self.session_id = None
+                self.viewer_role = ""
 
             if self._running:
                 logger.info(f"Reconectando em {self.reconnect_delay}s...")
@@ -2203,13 +2216,15 @@ class LinuxAgent:
 
         elif t == "connect_accept":
             self.session_id = sid or data.get("session_id")
+            self.viewer_role = data.get("viewer_role", "")
             viewer = data.get("viewer_id", "?")[:12]
-            logger.info(f"Viewer conectado: {viewer} | sessão: {(self.session_id or '')[:12]}")
+            logger.info(f"Viewer conectado: {viewer} | role: {self.viewer_role} | sessão: {(self.session_id or '')[:12]}")
 
         elif t == "disconnect":
             logger.info("Viewer desconectou")
             self._stop_shell()
             self.session_id = None
+            self.viewer_role = ""
 
         elif t == "shell_start":
             # Se shell já está rodando, aproveita a sessão existente
@@ -2552,7 +2567,31 @@ class LinuxAgent:
                            "data": {"action": action, "request_id": request_id, "result": result},
                            "session_id": session_id, "timestamp": time.time()})
 
+    # Ações AD que exigem role admin (escrita/destrutivas)
+    _AD_ADMIN_ONLY_ACTIONS = {
+        "user_create", "user_modify", "user_delete", "user_reset_password",
+        "user_enable", "user_disable", "user_unlock", "user_move",
+        "group_create", "group_delete", "group_add_member", "group_remove_member", "group_move",
+        "ou_create", "ou_delete", "ou_rename", "ou_move",
+        "gpo_create", "gpo_delete", "gpo_link", "gpo_unlink",
+        "gpo_write_file", "gpo_set_security", "gpo_rename",
+        "gpo_set_status", "gpo_set_link_enforced", "gpo_set_link_enabled",
+        "gpo_set_link_order", "gpo_set_block_inheritance",
+        "gpo_sec_write", "gpo_sec_delete",
+        "gpo_pref_add", "gpo_pref_update", "gpo_pref_delete",
+        "gpo_create_wmi_filter", "gpo_set_wmi_filter", "gpo_delete_wmi_filter",
+        "share_create", "share_set_acl", "share_set_posix", "share_mkdir",
+        "share_update", "share_delete", "share_rename", "share_set_permissions",
+        "ntfs_set_acl", "ntfs_add_ace", "ntfs_remove_ace", "ntfs_modify_ace",
+        "ntfs_set_owner", "ntfs_set_inheritance",
+        "path_delete", "path_rename",
+        "dns_add", "dns_delete",
+    }
+
     def _dispatch_ad_action(self, action, params):
+        if action in self._AD_ADMIN_ONLY_ACTIONS and self.viewer_role not in ("admin", "superadmin"):
+            logger.warning(f"AD action '{action}' bloqueada para viewer_role='{self.viewer_role}'")
+            return {"error": "Permissão insuficiente: esta operação exige role admin"}
         dispatch = {
             "domain_info":         lambda p: self._ad_domain.get_info(),
             "domain_computers":    lambda p: self._ad_domain.get_computers(),
