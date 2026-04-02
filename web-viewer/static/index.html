@@ -9,7 +9,7 @@
     <title>RN Remote - Acesso Remoto</title>
     <script>
         // Força reload se a versão do app mudou desde a última visita
-        const _APP_BUILD = '20260402-4';
+        const _APP_BUILD = '20260402-5';
         if (sessionStorage.getItem('app_build') !== _APP_BUILD) {
             sessionStorage.setItem('app_build', _APP_BUILD);
             if (performance.navigation ? performance.navigation.type !== 1 : !sessionStorage.getItem('_reloaded')) {
@@ -1116,7 +1116,7 @@
         <button class="btn btn-sm btn-accent" onclick="openUserModal()">+ Novo Usuário</button>
     </div>
     <table class="adm-table">
-        <thead><tr><th>E-mail</th><th>Nome</th><th>Perfil</th><th>Status</th><th>Último Login</th><th>Criado em</th><th></th></tr></thead>
+        <thead><tr><th>E-mail</th><th>Nome</th><th>Perfil</th><th>Status</th><th>MFA</th><th>Último Login</th><th>Criado em</th><th></th></tr></thead>
         <tbody id="admUsersBody"></tbody>
     </table>
 </div>
@@ -7473,20 +7473,52 @@ async function admLoadUsers() {
         const data = await res.json();
         const users = Array.isArray(data) ? data : (data.users||[]);
         if (!users.length) { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-dim);padding:20px">Nenhum usuário</td></tr>'; return; }
-        tbody.innerHTML = users.map(u => `<tr>
+        tbody.innerHTML = users.map(u => {
+            const mfaOn = !!u.mfa_enabled;
+            const mfaBtn = u.email !== 'app@rochaneto.com'
+                ? `<button onclick="admToggleMfa(${u.id},${mfaOn})"
+                    title="${mfaOn ? 'Desativar MFA' : 'Ativar MFA'}"
+                    style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border:none;border-radius:20px;cursor:pointer;font-size:11px;font-weight:600;
+                    background:${mfaOn ? '#16a34a' : '#e2e8f0'};color:${mfaOn ? '#fff' : '#64748b'};transition:background .2s">
+                    &#128274; ${mfaOn ? 'Ativo' : 'Inativo'}
+                   </button>`
+                : `<span style="font-size:11px;color:var(--text-dim)">—</span>`;
+            return `<tr>
             <td>${escapeHtml(u.email||'')}</td>
             <td>${escapeHtml(u.display_name||'-')}</td>
             <td>${u.email === 'app@rochaneto.com' ? '<span class="adm-badge" style="background:#7c3aed;color:#fff">Master</span>' : (u.profile_name ? `<span class="adm-badge adm-badge-info">${escapeHtml(u.profile_name)}</span>` : '<span style="color:var(--text-dim);font-size:11px">—</span>')}</td>
             <td>${u.is_active ? '<span class="active-badge">Ativo</span>' : '<span class="inactive-badge">Inativo</span>'}</td>
+            <td>${mfaBtn}</td>
             <td style="color:var(--text-dim);font-size:12px">${u.last_login ? new Date(u.last_login).toLocaleString('pt-BR') : '—'}</td>
             <td style="color:var(--text-dim);font-size:12px">${u.created_at ? new Date(u.created_at).toLocaleString('pt-BR') : '—'}</td>
             <td><div class="table-actions">
                 <button class="btn btn-sm btn-ghost" onclick="openUserModal(${JSON.stringify(u).replace(/"/g,'&quot;')})">Editar</button>
                 ${u.email !== 'app@rochaneto.com' ? `<button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id})">Excluir</button>` : ''}
             </div></td>
-        </tr>`).join('');
+        </tr>`;
+        }).join('');
     } catch(e) {
         tbody.innerHTML = '<tr><td colspan="7" style="color:var(--danger);padding:12px">Erro de conexão</td></tr>';
+    }
+}
+
+async function admToggleMfa(userId, currentState) {
+    const token = admGetToken();
+    const newState = !currentState;
+    try {
+        const res = await fetch(`/api/users/${userId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+            body: JSON.stringify({ mfa_enabled: newState })
+        });
+        const d = await res.json();
+        if (d.ok || res.ok) {
+            admLoadUsers();
+        } else {
+            alert('Erro: ' + (d.error || 'Falha ao atualizar MFA'));
+        }
+    } catch(e) {
+        alert('Erro de conexão');
     }
 }
 
