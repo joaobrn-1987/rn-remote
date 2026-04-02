@@ -10,6 +10,7 @@ import argparse
 import os
 import sys
 import hashlib
+import hmac as _hmac
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set
 
@@ -30,6 +31,49 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger("relay")
+
+
+# ─── Verificação de token (mesma lógica de server.py) ───
+
+_TOKEN_SECRET_FILE = "/etc/rnremote/token_secret"
+
+def _load_token_secret() -> str:
+    try:
+        with open(_TOKEN_SECRET_FILE) as f:
+            s = f.read().strip()
+            if s:
+                return s
+    except FileNotFoundError:
+        pass
+    logger.warning(f"Token secret não encontrado em {_TOKEN_SECRET_FILE}")
+    return ""
+
+_TOKEN_SECRET = _load_token_secret()
+
+
+def _verify_viewer_token(token: str) -> Optional[dict]:
+    """Verifica token Bearer do viewer. Retorna {user_id, email, role} ou None."""
+    if not _TOKEN_SECRET:
+        return None
+    try:
+        parts = token.split(":")
+        if len(parts) == 5:
+            user_id_s, email, role, expiry_s, sig = parts
+            payload = f"{user_id_s}:{email}:{role}:{expiry_s}"
+        elif len(parts) == 4:
+            user_id_s, email, expiry_s, sig = parts
+            role = ""
+            payload = f"{user_id_s}:{email}:{expiry_s}"
+        else:
+            return None
+        expected = _hmac.new(_TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(sig, expected):
+            return None
+        if time.time() >= int(expiry_s):
+            return None
+        return {"user_id": int(user_id_s), "email": email, "role": role}
+    except Exception:
+        return None
 
 
 # ─── Estruturas em memória (para performance do relay em tempo real) ───
@@ -59,6 +103,8 @@ class LiveViewer:
     websocket: any
     ip_address: str = ""
     viewer_name: str = ""
+    user_id: int = 0
+    role: str = ""
     last_heartbeat: float = field(default_factory=time.time)
     active_sessions: Set[str] = field(default_factory=set)
 
@@ -250,16 +296,30 @@ class RelayServer:
         await self.broadcast_agent_list()
 
     async def on_register_viewer(self, ws, msg, ip):
+        # Verificar token de autenticação
+        auth_token = msg.data.get("auth_token", "")
+        token_data = _verify_viewer_token(auth_token)
+        if not token_data:
+            logger.warning(f"Viewer rejeitado (token inválido/ausente): {ip}")
+            await self._send(ws, create_message(MessageType.AUTH_FAILURE,
+                data={"reason": "Token inválido ou expirado. Faça login no painel."}))
+            return
+
         viewer_id = msg.data.get("viewer_id", generate_session_id())
-        viewer_name = msg.data.get("viewer_name", "")
-        viewer = LiveViewer(viewer_id=viewer_id, websocket=ws, ip_address=ip, viewer_name=viewer_name)
+        viewer_name = msg.data.get("viewer_name", token_data.get("email", ""))
+        viewer = LiveViewer(
+            viewer_id=viewer_id, websocket=ws, ip_address=ip,
+            viewer_name=viewer_name,
+            user_id=token_data["user_id"],
+            role=token_data["role"],
+        )
         self.viewers[viewer_id] = viewer
         self.ws_to_viewer[ws] = viewer_id
 
         await self._send(ws, create_message(MessageType.AUTH_SUCCESS,
             data={"viewer_id": viewer_id, "server_version": PROTOCOL_VERSION}))
 
-        logger.info(f"Viewer registrado: {viewer_id[:12]} [{ip}]")
+        logger.info(f"Viewer registrado: {viewer_id[:12]} user={token_data['email']} [{ip}]")
         await self.send_agent_list(ws)
 
     # ─── Lista de Agentes ───
@@ -353,23 +413,49 @@ class RelayServer:
     # ─── Relay ───
 
     async def relay_to_agent(self, ws, msg):
-        s = self.sessions.get(msg.session_id)
-        if s:
-            a = self.agents.get(s.agent_id)
-            if a:
-                await self._send(a.websocket, msg.to_json())
-
-    async def relay_to_viewer(self, ws, msg):
-        s = self.sessions.get(msg.session_id)
-        if s:
-            v = self.viewers.get(s.viewer_id)
-            if v:
-                s.bytes_transferred += len(msg.to_json())
-                await self._send(v.websocket, msg.to_json())
-
-    async def relay_to_both(self, ws, msg):
+        """Relay viewer → agente. Verifica que o remetente é o viewer legítimo da sessão."""
         s = self.sessions.get(msg.session_id)
         if not s:
+            return
+        # Verificar ownership: apenas o viewer desta sessão pode enviar
+        sender_viewer_id = self.ws_to_viewer.get(ws)
+        if sender_viewer_id != s.viewer_id:
+            logger.warning(
+                f"relay_to_agent bloqueado: ws não é viewer da sessão {msg.session_id[:8]} "
+                f"(sender={sender_viewer_id}, owner={s.viewer_id})"
+            )
+            return
+        a = self.agents.get(s.agent_id)
+        if a:
+            await self._send(a.websocket, msg.to_json())
+
+    async def relay_to_viewer(self, ws, msg):
+        """Relay agente → viewer. Verifica que o remetente é o agente legítimo da sessão."""
+        s = self.sessions.get(msg.session_id)
+        if not s:
+            return
+        # Verificar ownership: apenas o agente desta sessão pode enviar
+        sender_agent_id = self.ws_to_agent.get(ws)
+        if sender_agent_id != s.agent_id:
+            logger.warning(
+                f"relay_to_viewer bloqueado: ws não é agente da sessão {msg.session_id[:8]} "
+                f"(sender={sender_agent_id}, owner={s.agent_id})"
+            )
+            return
+        v = self.viewers.get(s.viewer_id)
+        if v:
+            s.bytes_transferred += len(msg.to_json())
+            await self._send(v.websocket, msg.to_json())
+
+    async def relay_to_both(self, ws, msg):
+        """Relay bidirecional. Verifica ownership antes de encaminhar."""
+        s = self.sessions.get(msg.session_id)
+        if not s:
+            return
+        is_agent  = self.ws_to_agent.get(ws) == s.agent_id
+        is_viewer = self.ws_to_viewer.get(ws) == s.viewer_id
+        if not is_agent and not is_viewer:
+            logger.warning(f"relay_to_both bloqueado: ws não pertence à sessão {msg.session_id[:8]}")
             return
         a = self.agents.get(s.agent_id)
         v = self.viewers.get(s.viewer_id)
@@ -379,18 +465,23 @@ class RelayServer:
             await self._send(v.websocket, msg.to_json())
 
     async def relay_file_chunk(self, ws, msg):
+        """Relay de chunks de arquivo com verificação de ownership."""
         s = self.sessions.get(msg.session_id)
         if not s:
             return
-        if ws in self.ws_to_agent:
+        sender_agent_id  = self.ws_to_agent.get(ws)
+        sender_viewer_id = self.ws_to_viewer.get(ws)
+        if sender_agent_id == s.agent_id:
             v = self.viewers.get(s.viewer_id)
             if v:
                 s.bytes_transferred += len(msg.data.get("chunk", ""))
                 await self._send(v.websocket, msg.to_json())
-        else:
+        elif sender_viewer_id == s.viewer_id:
             a = self.agents.get(s.agent_id)
             if a:
                 await self._send(a.websocket, msg.to_json())
+        else:
+            logger.warning(f"relay_file_chunk bloqueado: ws não pertence à sessão {msg.session_id[:8]}")
 
     # ─── Heartbeat ───
 
@@ -517,12 +608,11 @@ def main():
     parser = argparse.ArgumentParser(description="RNRemote Relay")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--db", default=os.environ.get(
-        "DATABASE_URL",
-        "postgresql://remotelink:RemoteLink2024@localhost:5432/remotelink"
-    ))
+    parser.add_argument("--db", default=os.environ.get("DATABASE_URL", ""))
     args = parser.parse_args()
 
+    if not args.db:
+        raise RuntimeError("DATABASE_URL não definida. Configure a variável de ambiente.")
     server = RelayServer(host=args.host, port=args.port, db_dsn=args.db)
 
     try:

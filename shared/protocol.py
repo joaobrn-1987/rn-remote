@@ -1,5 +1,5 @@
 """
-RemoteLink - Protocolo de Comunicação
+RNRemote - Protocolo de Comunicação
 """
 
 import json
@@ -105,6 +105,7 @@ def generate_access_password(length: int = 6) -> str:
     return ''.join([str(secrets.randbelow(10)) for _ in range(length)])
 
 def hash_password(password: str, salt: str = "") -> str:
+    """Hash SHA256 legado — usado apenas para senhas de agentes no relay."""
     return hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
 
 def create_message(msg_type, data=None, session_id=None, agent_id=None) -> str:
@@ -118,3 +119,36 @@ def create_message(msg_type, data=None, session_id=None, agent_id=None) -> str:
 
 def parse_message(raw: str) -> Message:
     return Message.from_json(raw)
+
+
+# ─── Hashing seguro para senhas de usuários do painel (bcrypt) ───
+
+try:
+    import bcrypt as _bcrypt
+
+    def hash_password_bcrypt(password: str) -> str:
+        """Gera hash bcrypt para senhas de usuários admin."""
+        return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt(rounds=12)).decode()
+
+    def verify_password(password: str, stored_hash: str) -> bool:
+        """
+        Verifica senha contra hash bcrypt OU sha256 legado.
+        Retorna True se a senha for válida.
+        """
+        if stored_hash.startswith("$2b$") or stored_hash.startswith("$2a$") or stored_hash.startswith("$2y$"):
+            try:
+                return _bcrypt.checkpw(password.encode(), stored_hash.encode())
+            except Exception:
+                return False
+        # Fallback legado sha256 (migração gradual)
+        return hashlib.sha256(password.encode()).hexdigest() == stored_hash
+
+except ImportError:
+    import warnings
+    warnings.warn("bcrypt não instalado — use 'pip install bcrypt'. Senhas verificadas com sha256 legado.")
+
+    def hash_password_bcrypt(password: str) -> str:
+        return hash_password(password)
+
+    def verify_password(password: str, stored_hash: str) -> bool:
+        return hash_password(password) == stored_hash

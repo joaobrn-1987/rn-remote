@@ -6,8 +6,11 @@ import asyncio
 import json
 import time
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import Optional, List, Dict
+
+from shared.protocol import verify_password, hash_password_bcrypt
 
 import asyncpg
 
@@ -75,10 +78,9 @@ class Database:
         Gera agent_id único de 9 dígitos.
         Retorna o agent_id gerado.
         """
-        import random
         async with self.pool.acquire() as conn:
             for _ in range(20):
-                agent_id = ''.join([str(random.randint(0, 9)) for _ in range(9)])
+                agent_id = ''.join([str(secrets.randbelow(10)) for _ in range(9)])
                 exists = await conn.fetchval(
                     "SELECT 1 FROM agents WHERE agent_id = $1", agent_id
                 )
@@ -167,6 +169,17 @@ class Database:
             rows = await conn.fetch(
                 "SELECT * FROM agents ORDER BY is_online DESC, last_seen DESC"
             )
+            return [dict(r) for r in rows]
+
+    async def get_all_agents_safe(self) -> List[dict]:
+        """Retorna agentes sem campos sensíveis (password_hash, binding_hash)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT id, agent_id, nickname, hostname, os_type, os_version,
+                       username, ip_address, screen_width, screen_height,
+                       is_online, last_seen, created_at, updated_at
+                FROM agents ORDER BY is_online DESC, last_seen DESC
+            """)
             return [dict(r) for r in rows]
 
     async def update_agent_heartbeat(self, agent_id: str):
@@ -302,22 +315,34 @@ class Database:
     # ─── Admin Users ───
 
     async def authenticate_admin(self, email: str,
-                                 password_hash: str) -> Optional[dict]:
+                                 password: str) -> Optional[dict]:
+        """
+        Autentica usuário admin.
+        Aceita senha em claro e verifica contra bcrypt ou sha256 legado.
+        Se o hash ainda for sha256, faz upgrade automático para bcrypt.
+        """
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
-                SELECT * FROM admin_users
-                WHERE email = $1 AND password_hash = $2 AND is_active = TRUE
-                """,
-                email, password_hash
+                "SELECT * FROM admin_users WHERE email = $1 AND is_active = TRUE",
+                email
             )
-            if row:
+            if not row:
+                return None
+            stored_hash = row['password_hash']
+            if not verify_password(password, stored_hash):
+                return None
+            # Migração automática: se ainda for sha256, atualiza para bcrypt
+            if not (stored_hash.startswith("$2b$") or stored_hash.startswith("$2a$")):
+                new_hash = hash_password_bcrypt(password)
                 await conn.execute(
-                    "UPDATE admin_users SET last_login = NOW() WHERE id = $1",
-                    row['id']
+                    "UPDATE admin_users SET password_hash = $1 WHERE id = $2",
+                    new_hash, row['id']
                 )
-                return dict(row)
-            return None
+            await conn.execute(
+                "UPDATE admin_users SET last_login = NOW() WHERE id = $1",
+                row['id']
+            )
+            return dict(row)
 
     async def get_all_admin_users(self) -> List[dict]:
         async with self.pool.acquire() as conn:
@@ -732,22 +757,31 @@ class Database:
     async def ensure_access_tables(self):
         """Garante colunas e tabelas de controle de acesso por usuário."""
         async with self.pool.acquire() as conn:
-            await conn.execute("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS access_all_clients BOOLEAN NOT NULL DEFAULT TRUE")
-            await conn.execute("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS access_all_groups  BOOLEAN NOT NULL DEFAULT TRUE")
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS user_client_access (
+            # ALTER TABLE pode falhar se o usuário DB não for owner (colunas já existem após migração manual)
+            for ddl in [
+                "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS access_all_clients BOOLEAN NOT NULL DEFAULT TRUE",
+                "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS access_all_groups  BOOLEAN NOT NULL DEFAULT TRUE",
+            ]:
+                try:
+                    await conn.execute(ddl)
+                except Exception:
+                    pass  # coluna já existe ou sem privilégio — ignorar
+            for ddl in [
+                """CREATE TABLE IF NOT EXISTS user_client_access (
                     user_id   INT REFERENCES admin_users(id) ON DELETE CASCADE,
                     client_id INT REFERENCES clients(id)     ON DELETE CASCADE,
                     PRIMARY KEY (user_id, client_id)
-                )
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS user_group_access (
+                )""",
+                """CREATE TABLE IF NOT EXISTS user_group_access (
                     user_id  INT REFERENCES admin_users(id)    ON DELETE CASCADE,
                     group_id INT REFERENCES agent_groups(id)   ON DELETE CASCADE,
                     PRIMARY KEY (user_id, group_id)
-                )
-            """)
+                )""",
+            ]:
+                try:
+                    await conn.execute(ddl)
+                except Exception:
+                    pass  # tabela já existe ou sem privilégio — ignorar
 
     # ─── Clientes ───
 

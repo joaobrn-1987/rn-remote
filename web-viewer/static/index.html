@@ -9,7 +9,7 @@
     <title>RN Remote - Acesso Remoto</title>
     <script>
         // Força reload se a versão do app mudou desde a última visita
-        const _APP_BUILD = '20260402-6';
+        const _APP_BUILD = '20260402-7';
         if (sessionStorage.getItem('app_build') !== _APP_BUILD) {
             sessionStorage.setItem('app_build', _APP_BUILD);
             if (performance.navigation ? performance.navigation.type !== 1 : !sessionStorage.getItem('_reloaded')) {
@@ -2152,7 +2152,8 @@ function connectToRelay() {
             updateStatus('Conectado ao relay', true);
             sendMessage('register_viewer', {
                 viewer_id: crypto.randomUUID(),
-                viewer_name: localStorage.getItem('auth_user') || localStorage.getItem('auth_email') || ''
+                viewer_name: localStorage.getItem('auth_user') || localStorage.getItem('auth_email') || '',
+                auth_token: localStorage.getItem('auth_token') || ''
             });
         };
 
