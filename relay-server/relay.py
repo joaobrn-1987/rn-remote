@@ -58,6 +58,7 @@ class LiveViewer:
     viewer_id: str
     websocket: any
     ip_address: str = ""
+    viewer_name: str = ""
     last_heartbeat: float = field(default_factory=time.time)
     active_sessions: Set[str] = field(default_factory=set)
 
@@ -250,7 +251,8 @@ class RelayServer:
 
     async def on_register_viewer(self, ws, msg, ip):
         viewer_id = msg.data.get("viewer_id", generate_session_id())
-        viewer = LiveViewer(viewer_id=viewer_id, websocket=ws, ip_address=ip)
+        viewer_name = msg.data.get("viewer_name", "")
+        viewer = LiveViewer(viewer_id=viewer_id, websocket=ws, ip_address=ip, viewer_name=viewer_name)
         self.viewers[viewer_id] = viewer
         self.ws_to_viewer[ws] = viewer_id
 
@@ -331,7 +333,8 @@ class RelayServer:
         self.viewers[viewer_id].active_sessions.add(session_id)
 
         # Persistir no banco
-        await self.db.create_session(session_id, agent_id, viewer_id, ip)
+        vname = self.viewers[viewer_id].viewer_name if viewer_id in self.viewers else ""
+        await self.db.create_session(session_id, agent_id, viewer_id, ip, viewer_name=vname)
         await self.db.log_event("session_started", agent_id=agent_id,
                                 viewer_id=viewer_id, session_id=session_id,
                                 ip_address=ip)

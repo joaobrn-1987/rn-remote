@@ -78,7 +78,11 @@ class WebPanel:
     # ─── Páginas ───
 
     async def index(self, req):
-        return web.FileResponse(os.path.join(STATIC_DIR, "index.html"))
+        resp = web.FileResponse(os.path.join(STATIC_DIR, "index.html"))
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        resp.headers['Pragma'] = 'no-cache'
+        resp.headers['Expires'] = '0'
+        return resp
 
     async def admin_page(self, req):
         return web.FileResponse(os.path.join(STATIC_DIR, "admin.html"))
@@ -93,10 +97,17 @@ class WebPanel:
         )
         if user:
             token = _generate_token(user['id'], user['email'])
+            # Usuário master tem controle total — permissões ilimitadas
+            if user['email'] == 'app@rochaneto.com' or user.get('role') == 'superadmin':
+                permissions = {'*': True}
+            else:
+                permissions = await self.db.get_user_permissions(user['id'])
             return web.json_response({
                 "ok": True, "token": token,
                 "user": user['display_name'] or user['email'],
-                "role": user['role'], "user_id": user['id']
+                "role": user['role'], "user_id": user['id'],
+                "profile_id": user.get('profile_id'),
+                "permissions": permissions
             })
         return web.json_response({"ok": False, "error": "Credenciais inválidas"}, status=401)
 
@@ -160,10 +171,76 @@ class WebPanel:
             "binding_secret": binding_secret,   # entregue UMA vez
         })
 
+    # ─── API: Perfis ───
+
+    async def api_get_profiles(self, req):
+        profiles = await self.db.get_all_profiles()
+        for p in profiles:
+            for k, v in p.items():
+                if hasattr(v, 'isoformat'):
+                    p[k] = v.isoformat()
+        return web.json_response(profiles)
+
+    async def api_create_profile(self, req):
+        data = await req.json()
+        name = data.get("name", "").strip()
+        if not name:
+            return web.json_response({"ok": False, "error": "Nome obrigatório"}, status=400)
+        try:
+            profile = await self.db.create_profile(name, data.get("description", ""))
+            for k, v in profile.items():
+                if hasattr(v, 'isoformat'):
+                    profile[k] = v.isoformat()
+            return web.json_response({"ok": True, "profile": profile})
+        except Exception:
+            return web.json_response({"ok": False, "error": "Nome já cadastrado"}, status=400)
+
+    async def api_update_profile(self, req):
+        profile_id = int(req.match_info['profile_id'])
+        data = await req.json()
+        kwargs = {}
+        if "name" in data:
+            kwargs["name"] = data["name"]
+        if "description" in data:
+            kwargs["description"] = data["description"]
+        await self.db.update_profile(profile_id, **kwargs)
+        return web.json_response({"ok": True})
+
+    async def api_delete_profile(self, req):
+        profile_id = int(req.match_info['profile_id'])
+        await self.db.delete_profile(profile_id)
+        return web.json_response({"ok": True})
+
+    async def api_get_profile_permissions(self, req):
+        profile_id = int(req.match_info['profile_id'])
+        perms = await self.db.get_profile_permissions(profile_id)
+        return web.json_response(perms)
+
+    async def api_save_profile_permissions(self, req):
+        profile_id = int(req.match_info['profile_id'])
+        data = await req.json()
+        permissions = data.get("permissions", [])
+        await self.db.save_profile_permissions(profile_id, permissions)
+        return web.json_response({"ok": True})
+
+    async def api_get_my_permissions(self, req):
+        auth = req.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return web.json_response({}, status=401)
+        token = auth[7:]
+        if not _verify_token(token):
+            return web.json_response({}, status=401)
+        try:
+            user_id = int(token.split(":")[0])
+        except Exception:
+            return web.json_response({}, status=401)
+        perms = await self.db.get_user_permissions(user_id)
+        return web.json_response(perms)
+
     # ─── API: Usuários Admin ───
 
     async def api_get_users(self, req):
-        users = await self.db.get_all_admin_users()
+        users = await self.db.get_all_admin_users_with_profile()
         for u in users:
             for k, v in u.items():
                 if hasattr(v, 'isoformat'):
@@ -176,13 +253,23 @@ class WebPanel:
         password = data.get("password", "")
         display_name = data.get("display_name", "").strip()
         role = data.get("role", "admin")
+        profile_id = data.get("profile_id")
         if not email or not password:
             return web.json_response({"ok": False, "error": "E-mail e senha são obrigatórios"}, status=400)
         try:
             user = await self.db.create_admin_user(email, hash_password(password), display_name, role)
+            if profile_id and user.get("id"):
+                await self.db.update_user_profile(user["id"], int(profile_id))
+            for k, v in user.items():
+                if hasattr(v, 'isoformat'):
+                    user[k] = v.isoformat()
             return web.json_response({"ok": True, "user": user})
-        except Exception:
-            return web.json_response({"ok": False, "error": "E-mail já cadastrado"}, status=400)
+        except Exception as e:
+            err_str = str(e)
+            logging.error("api_create_user error: %s", err_str)
+            if "unique" in err_str.lower() or "duplicate" in err_str.lower():
+                return web.json_response({"ok": False, "error": "E-mail já cadastrado"}, status=400)
+            return web.json_response({"ok": False, "error": f"Erro ao criar usuário: {err_str}"}, status=400)
 
     async def api_update_user(self, req):
         user_id = int(req.match_info['user_id'])
@@ -199,10 +286,17 @@ class WebPanel:
         if "is_active" in data:
             kwargs["is_active"] = bool(data["is_active"])
         await self.db.update_admin_user(user_id, **kwargs)
+        if "profile_id" in data:
+            pid = int(data["profile_id"]) if data["profile_id"] else None
+            await self.db.update_user_profile(user_id, pid)
         return web.json_response({"ok": True})
 
     async def api_delete_user(self, req):
         user_id = int(req.match_info['user_id'])
+        # Protege o usuário master
+        user = await self.db.get_admin_user_by_id(user_id)
+        if user and user.get('email') == 'app@rochaneto.com':
+            return web.json_response({"ok": False, "error": "O usuário master não pode ser removido"}, status=403)
         await self.db.delete_admin_user(user_id)
         return web.json_response({"ok": True})
 
@@ -306,8 +400,10 @@ class WebPanel:
         if not name:
             return web.json_response({"ok": False, "error": "Nome obrigatório"}, status=400)
         try:
+            cid = data.get("client_id")
             group = await self.db.create_group(
-                name, data.get("description", ""), data.get("color", "#3b82f6")
+                name, data.get("description", ""), data.get("color", "#3b82f6"),
+                client_id=int(cid) if cid else None
             )
             for k, v in group.items():
                 if hasattr(v, 'isoformat'):
@@ -319,11 +415,13 @@ class WebPanel:
     async def api_update_group(self, req):
         group_id = int(req.match_info['group_id'])
         data = await req.json()
+        cid = data.get("client_id")
         await self.db.update_group(
             group_id,
             name=data.get("name"),
             description=data.get("description"),
-            color=data.get("color")
+            color=data.get("color"),
+            client_id=int(cid) if cid else None
         )
         return web.json_response({"ok": True})
 
@@ -332,10 +430,20 @@ class WebPanel:
         await self.db.delete_group(group_id)
         return web.json_response({"ok": True})
 
+    async def api_get_client_groups(self, req):
+        client_id = int(req.match_info['client_id'])
+        groups = await self.db.get_client_groups(client_id)
+        return web.json_response(groups)
+
     async def api_get_group_agents(self, req):
         group_id = int(req.match_info['group_id'])
         agents = await self.db.get_group_agents(group_id)
         return web.json_response(agents)
+
+    async def api_get_agents_in_any_group(self, req):
+        """Retorna set de agent_ids que já pertencem a algum grupo."""
+        ids = await self.db.get_agents_in_any_group()
+        return web.json_response(ids)
 
     async def api_add_agent_to_group(self, req):
         group_id = int(req.match_info['group_id'])
@@ -343,7 +451,12 @@ class WebPanel:
         agent_id = data.get("agent_id", "").strip()
         if not agent_id:
             return web.json_response({"ok": False, "error": "agent_id obrigatório"}, status=400)
-        await self.db.add_agent_to_group(group_id, agent_id)
+        try:
+            await self.db.add_agent_to_group(group_id, agent_id)
+        except Exception as e:
+            if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                return web.json_response({"ok": False, "error": "Esta máquina já pertence a outro grupo"}, status=400)
+            raise
         return web.json_response({"ok": True})
 
     async def api_remove_agent_from_group(self, req):
@@ -375,6 +488,8 @@ class WebPanel:
             email=data.get("email", ""),
             phone=data.get("phone", ""),
             notes=data.get("notes", ""),
+            alert_enabled=bool(data.get("alert_enabled", False)),
+            alert_message=data.get("alert_message", ""),
         )
         for k, v in client.items():
             if hasattr(v, 'isoformat'):
@@ -386,14 +501,18 @@ class WebPanel:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
         client_id = int(req.match_info['client_id'])
         data = await req.json()
-        await self.db.update_client(
-            client_id,
+        update_kwargs = dict(
             name=data.get("name"),
             document=data.get("document"),
             email=data.get("email"),
             phone=data.get("phone"),
             notes=data.get("notes"),
         )
+        if "alert_enabled" in data:
+            update_kwargs["alert_enabled"] = bool(data["alert_enabled"])
+        if "alert_message" in data:
+            update_kwargs["alert_message"] = data["alert_message"]
+        await self.db.update_client(client_id, **update_kwargs)
         return web.json_response({"ok": True})
 
     async def api_delete_client(self, req):
@@ -408,6 +527,10 @@ class WebPanel:
         agents = await self.db.get_client_agents(client_id)
         return web.json_response(agents)
 
+    async def api_get_agents_in_any_client(self, req):
+        ids = await self.db.get_agents_in_any_client()
+        return web.json_response(ids)
+
     async def api_add_agent_to_client(self, req):
         if not self._require_auth(req):
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
@@ -416,7 +539,12 @@ class WebPanel:
         agent_id = data.get("agent_id", "").strip()
         if not agent_id:
             return web.json_response({"ok": False, "error": "agent_id obrigatório"}, status=400)
-        await self.db.add_agent_to_client(client_id, agent_id)
+        try:
+            await self.db.add_agent_to_client(client_id, agent_id)
+        except Exception as e:
+            if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                return web.json_response({"ok": False, "error": "Esta máquina já está vinculada a outro cliente"}, status=400)
+            raise
         return web.json_response({"ok": True})
 
     async def api_remove_agent_from_client(self, req):
@@ -470,6 +598,7 @@ def create_app(db_dsn: str):
     app.router.add_post("/api/groups", panel.api_create_group)
     app.router.add_put("/api/groups/{group_id}", panel.api_update_group)
     app.router.add_delete("/api/groups/{group_id}", panel.api_delete_group)
+    app.router.add_get("/api/groups/agents-allocated", panel.api_get_agents_in_any_group)
     app.router.add_get("/api/groups/{group_id}/agents", panel.api_get_group_agents)
     app.router.add_post("/api/groups/{group_id}/agents", panel.api_add_agent_to_group)
     app.router.add_delete("/api/groups/{group_id}/agents/{agent_id}", panel.api_remove_agent_from_group)
@@ -479,9 +608,20 @@ def create_app(db_dsn: str):
     app.router.add_post("/api/clients", panel.api_create_client)
     app.router.add_put("/api/clients/{client_id}", panel.api_update_client)
     app.router.add_delete("/api/clients/{client_id}", panel.api_delete_client)
+    app.router.add_get("/api/clients/{client_id}/groups", panel.api_get_client_groups)
+    app.router.add_get("/api/clients/agents-allocated", panel.api_get_agents_in_any_client)
     app.router.add_get("/api/clients/{client_id}/agents", panel.api_get_client_agents)
     app.router.add_post("/api/clients/{client_id}/agents", panel.api_add_agent_to_client)
     app.router.add_delete("/api/clients/{client_id}/agents/{agent_id}", panel.api_remove_agent_from_client)
+
+    # Perfis
+    app.router.add_get("/api/profiles", panel.api_get_profiles)
+    app.router.add_post("/api/profiles", panel.api_create_profile)
+    app.router.add_put("/api/profiles/{profile_id}", panel.api_update_profile)
+    app.router.add_delete("/api/profiles/{profile_id}", panel.api_delete_profile)
+    app.router.add_get("/api/profiles/{profile_id}/permissions", panel.api_get_profile_permissions)
+    app.router.add_put("/api/profiles/{profile_id}/permissions", panel.api_save_profile_permissions)
+    app.router.add_get("/api/me/permissions", panel.api_get_my_permissions)
 
     # Arquivos estáticos
     app.router.add_static("/static/", STATIC_DIR, name="static")

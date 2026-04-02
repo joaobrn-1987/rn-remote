@@ -36,6 +36,7 @@ class Database:
         await self.ensure_agent_columns()
         await self.ensure_group_tables()
         await self.ensure_client_tables()
+        await self.ensure_profile_tables()
 
     async def close(self):
         if self.pool:
@@ -190,15 +191,16 @@ class Database:
     # ─── Sessões ───
 
     async def create_session(self, session_id: str, agent_id: str,
-                             viewer_id: str, viewer_ip: str = "") -> dict:
+                             viewer_id: str, viewer_ip: str = "",
+                             viewer_name: str = "") -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO sessions (session_id, agent_id, viewer_id, viewer_ip, status)
-                VALUES ($1, $2, $3, $4, 'active')
+                INSERT INTO sessions (session_id, agent_id, viewer_id, viewer_ip, viewer_name, status)
+                VALUES ($1, $2, $3, $4, $5, 'active')
                 RETURNING *
                 """,
-                session_id, agent_id, viewer_id, viewer_ip
+                session_id, agent_id, viewer_id, viewer_ip, viewer_name
             )
             return dict(row) if row else {}
 
@@ -329,8 +331,8 @@ class Database:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO admin_users (email, password_hash, display_name, role)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO admin_users (email, username, password_hash, display_name, role)
+                VALUES ($1, $1, $2, $3, $4)
                 RETURNING id, email, display_name, role, is_active, created_at
                 """,
                 email, password_hash, display_name, role
@@ -361,12 +363,177 @@ class Database:
             )
             return result == "UPDATE 1"
 
+    async def get_admin_user_by_id(self, user_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, email, role FROM admin_users WHERE id = $1", user_id
+            )
+            return dict(row) if row else None
+
     async def delete_admin_user(self, user_id: int) -> bool:
         async with self.pool.acquire() as conn:
             result = await conn.execute(
                 "DELETE FROM admin_users WHERE id = $1", user_id
             )
             return result == "DELETE 1"
+
+    # ─── Perfis (Profiles) ───
+
+    ALL_MODULES = [
+        'machines','dashboard','clients','sessions','audit',
+        'agents','agent_linux','agent_pfsense','agent_windows',
+        'agent_update','groups','general','users','profiles'
+    ]
+
+    async def ensure_profile_tables(self):
+        """Verifica tabelas de perfis e cria perfis padrão se necessário."""
+        async with self.pool.acquire() as conn:
+            has_profiles = await conn.fetchval(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name='profiles'"
+            )
+            if not has_profiles:
+                logger.warning("Tabela 'profiles' não encontrada. Execute a migração como superusuário do PostgreSQL.")
+                return
+            # Cria perfis padrão se não existirem
+            await self._ensure_default_profiles(conn)
+
+    async def _ensure_default_profiles(self, conn):
+        """Cria perfis Admin e Viewer com permissões padrão, se ainda não existem."""
+        admin_id = await conn.fetchval("SELECT id FROM profiles WHERE name='Admin'")
+        if not admin_id:
+            row = await conn.fetchrow(
+                "INSERT INTO profiles (name, description) VALUES ('Admin', 'Acesso completo ao sistema') RETURNING id"
+            )
+            admin_id = row['id']
+            for mod in self.ALL_MODULES:
+                await conn.execute("""
+                    INSERT INTO profile_permissions (profile_id, module, can_view, can_create, can_edit, can_delete)
+                    VALUES ($1, $2, TRUE, TRUE, TRUE, TRUE) ON CONFLICT DO NOTHING
+                """, admin_id, mod)
+            logger.info("Perfil 'Admin' criado com todas as permissões")
+
+        # Vincula o usuário master ao perfil Admin se não tiver perfil
+        await conn.execute("""
+            UPDATE admin_users SET profile_id = $1, role = 'superadmin'
+            WHERE email = 'app@rochaneto.com' AND profile_id IS NULL
+        """, admin_id)
+
+    async def get_all_profiles(self) -> List[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT p.*, COUNT(u.id) AS user_count
+                FROM profiles p
+                LEFT JOIN admin_users u ON u.profile_id = p.id
+                GROUP BY p.id ORDER BY p.name
+            """)
+            return [dict(r) for r in rows]
+
+    async def get_profile(self, profile_id: int) -> Optional[dict]:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM profiles WHERE id = $1", profile_id)
+            return dict(row) if row else None
+
+    async def create_profile(self, name: str, description: str = '') -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO profiles (name, description) VALUES ($1, $2) RETURNING *",
+                name, description
+            )
+            return dict(row) if row else {}
+
+    async def update_profile(self, profile_id: int, name: str = None,
+                             description: str = None) -> bool:
+        fields, values, idx = [], [], 1
+        if name is not None:
+            fields.append(f"name = ${idx}"); values.append(name); idx += 1
+        if description is not None:
+            fields.append(f"description = ${idx}"); values.append(description); idx += 1
+        if not fields:
+            return False
+        values.append(profile_id)
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                f"UPDATE profiles SET {', '.join(fields)} WHERE id = ${idx}", *values
+            )
+            return result == "UPDATE 1"
+
+    async def delete_profile(self, profile_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM profiles WHERE id = $1", profile_id)
+            return result == "DELETE 1"
+
+    async def get_profile_permissions(self, profile_id: int) -> List[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM profile_permissions WHERE profile_id = $1 ORDER BY module",
+                profile_id
+            )
+            return [dict(r) for r in rows]
+
+    async def save_profile_permissions(self, profile_id: int,
+                                       permissions: List[dict]):
+        """Salva lista de permissões [{module, can_view, can_create, can_edit, can_delete}]."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM profile_permissions WHERE profile_id = $1", profile_id
+            )
+            for p in permissions:
+                await conn.execute("""
+                    INSERT INTO profile_permissions
+                        (profile_id, module, can_view, can_create, can_edit, can_delete)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                profile_id,
+                p['module'],
+                bool(p.get('can_view', False)),
+                bool(p.get('can_create', False)),
+                bool(p.get('can_edit', False)),
+                bool(p.get('can_delete', False))
+                )
+
+    async def get_user_permissions(self, user_id: int) -> dict:
+        """Retorna dict {module: {can_view, can_create, can_edit, can_delete}} do perfil do usuário."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT profile_id, role FROM admin_users WHERE id = $1", user_id
+            )
+            if not row:
+                return {}
+            # superadmin tem tudo
+            if row['role'] == 'superadmin':
+                return {'*': True}
+            if not row['profile_id']:
+                return {}
+            rows = await conn.fetch(
+                "SELECT * FROM profile_permissions WHERE profile_id = $1",
+                row['profile_id']
+            )
+            return {r['module']: {
+                'can_view':   r['can_view'],
+                'can_create': r['can_create'],
+                'can_edit':   r['can_edit'],
+                'can_delete': r['can_delete'],
+            } for r in rows}
+
+    async def update_user_profile(self, user_id: int, profile_id: Optional[int]) -> bool:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE admin_users SET profile_id = $1 WHERE id = $2",
+                profile_id, user_id
+            )
+            return result == "UPDATE 1"
+
+    async def get_all_admin_users_with_profile(self) -> List[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT u.id, u.email, u.display_name, u.role, u.is_active,
+                       u.last_login, u.created_at, u.profile_id,
+                       p.name AS profile_name
+                FROM admin_users u
+                LEFT JOIN profiles p ON p.id = u.profile_id
+                ORDER BY u.created_at
+            """)
+            return [dict(r) for r in rows]
 
     # ─── Settings ───
 
@@ -418,24 +585,41 @@ class Database:
     async def get_all_groups(self) -> List[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT g.*, COUNT(m.agent_id) AS agent_count
+                SELECT g.*, COUNT(m.agent_id) AS agent_count,
+                       c.name AS client_name
                 FROM agent_groups g
                 LEFT JOIN agent_group_members m ON m.group_id = g.id
-                GROUP BY g.id ORDER BY g.name
+                LEFT JOIN clients c ON c.id = g.client_id
+                GROUP BY g.id, c.name ORDER BY c.name NULLS LAST, g.name
             """)
             return [dict(r) for r in rows]
 
+    async def get_client_groups(self, client_id: int) -> List[dict]:
+        """Retorna grupos que possuem pelo menos um agente vinculado ao cliente."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT DISTINCT g.id, g.name, g.color,
+                       COUNT(m.agent_id) OVER (PARTITION BY g.id) AS agent_count
+                FROM agent_groups g
+                JOIN agent_group_members m ON m.group_id = g.id
+                JOIN client_agents ca ON ca.agent_id = m.agent_id
+                WHERE ca.client_id = $1
+                ORDER BY g.name
+            """, client_id)
+            return [dict(r) for r in rows]
+
     async def create_group(self, name: str, description: str = '',
-                           color: str = '#3b82f6') -> dict:
+                           color: str = '#3b82f6', client_id: int = None) -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO agent_groups (name, description, color) VALUES ($1, $2, $3) RETURNING *",
-                name, description, color
+                "INSERT INTO agent_groups (name, description, color, client_id) VALUES ($1, $2, $3, $4) RETURNING *",
+                name, description, color, client_id
             )
             return dict(row) if row else {}
 
     async def update_group(self, group_id: int, name: str = None,
-                           description: str = None, color: str = None) -> bool:
+                           description: str = None, color: str = None,
+                           client_id: int = None) -> bool:
         fields, values, idx = [], [], 1
         if name is not None:
             fields.append(f"name = ${idx}"); values.append(name); idx += 1
@@ -443,6 +627,8 @@ class Database:
             fields.append(f"description = ${idx}"); values.append(description); idx += 1
         if color is not None:
             fields.append(f"color = ${idx}"); values.append(color); idx += 1
+        if client_id is not None:
+            fields.append(f"client_id = ${idx}"); values.append(client_id); idx += 1
         if not fields:
             return False
         values.append(group_id)
@@ -466,6 +652,11 @@ class Database:
                 WHERE m.group_id = $1 ORDER BY a.hostname
             """, group_id)
             return [dict(r) for r in rows]
+
+    async def get_agents_in_any_group(self) -> list:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT agent_id FROM agent_group_members")
+            return [r['agent_id'] for r in rows]
 
     async def add_agent_to_group(self, group_id: int, agent_id: str):
         async with self.pool.acquire() as conn:
@@ -521,20 +712,23 @@ class Database:
             return dict(row) if row else None
 
     async def create_client(self, name: str, document: str = '', email: str = '',
-                            phone: str = '', notes: str = '') -> dict:
+                            phone: str = '', notes: str = '',
+                            alert_enabled: bool = False, alert_message: str = '') -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO clients (name, document, email, phone, notes) "
-                "VALUES ($1, $2, $3, $4, $5) RETURNING *",
-                name, document, email, phone, notes
+                "INSERT INTO clients (name, document, email, phone, notes, alert_enabled, alert_message) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *",
+                name, document, email, phone, notes, alert_enabled, alert_message
             )
             return dict(row) if row else {}
 
     async def update_client(self, client_id: int, name: str = None, document: str = None,
-                            email: str = None, phone: str = None, notes: str = None) -> bool:
+                            email: str = None, phone: str = None, notes: str = None,
+                            alert_enabled: bool = None, alert_message: str = None) -> bool:
         fields, values, idx = [], [], 1
         for col, val in [('name', name), ('document', document), ('email', email),
-                         ('phone', phone), ('notes', notes)]:
+                         ('phone', phone), ('notes', notes),
+                         ('alert_enabled', alert_enabled), ('alert_message', alert_message)]:
             if val is not None:
                 fields.append(f"{col} = ${idx}"); values.append(val); idx += 1
         if not fields:
@@ -561,6 +755,11 @@ class Database:
                 WHERE ca.client_id = $1 ORDER BY a.hostname
             """, client_id)
             return [dict(r) for r in rows]
+
+    async def get_agents_in_any_client(self) -> list:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("SELECT agent_id FROM client_agents")
+            return [r['agent_id'] for r in rows]
 
     async def add_agent_to_client(self, client_id: int, agent_id: str):
         async with self.pool.acquire() as conn:

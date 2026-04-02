@@ -32,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.2.7"
+AGENT_VERSION = "1.3.9"
 
 import websockets
 
@@ -198,9 +198,35 @@ def _ldbdel(dn):
 
 
 def _parse_ldb_output(stdout):
+    """Parseia saída LDIF do ldbsearch (RFC 2849).
+
+    Trata corretamente:
+    - Line folding: linhas longas quebradas em 76 chars com continuação
+      iniciada por espaço (ex: DNs longos, displayName, etc.)
+    - Valores Base64 (attr:: <b64>): usados para caracteres não-ASCII
+      como acentos em nomes brasileiros (ã, ç, ê, etc.)
+    """
+    def _b64(s):
+        try:
+            return base64.b64decode(s.strip()).decode("utf-8", errors="replace")
+        except Exception:
+            return s.strip()
+
+    # ── Passo 1: desfazer line folding (RFC 2849 §2.3) ──────────────────
+    # Linhas de continuação começam com um espaço; o espaço é removido e
+    # o conteúdo é emendado à linha anterior.
+    raw_lines = stdout.splitlines()
+    lines = []
+    for raw in raw_lines:
+        if raw.startswith(" ") and lines:
+            lines[-1] += raw[1:]   # emenda sem o espaço inicial
+        else:
+            lines.append(raw)
+
+    # ── Passo 2: parsear as linhas já desdobradas ────────────────────────
     entries = []
     current = {}
-    for line in stdout.splitlines():
+    for line in lines:
         if line.startswith("#"):
             continue
         if not line.strip():
@@ -208,10 +234,27 @@ def _parse_ldb_output(stdout):
                 entries.append(current)
                 current = {}
             continue
+        # dn: <valor> — inicia nova entrada
         if line.startswith("dn: "):
             if current:
                 entries.append(current)
             current = {"dn": line[4:].strip()}
+        # dn:: <base64> — dn com caracteres não-ASCII
+        elif line.startswith("dn:: "):
+            if current:
+                entries.append(current)
+            current = {"dn": _b64(line[5:])}
+        # attr:: <base64> — valor não-ASCII
+        elif ":: " in line:
+            key, _, b64 = line.partition(":: ")
+            key = key.strip()
+            value = _b64(b64)
+            if key in current:
+                existing = current[key]
+                current[key] = existing + [value] if isinstance(existing, list) else [existing, value]
+            else:
+                current[key] = value
+        # attr: <valor> — valor ASCII normal
         elif ": " in line:
             key, _, value = line.partition(": ")
             key = key.strip(); value = value.strip()
@@ -223,6 +266,83 @@ def _parse_ldb_output(stdout):
     if current:
         entries.append(current)
     return [e for e in entries if e.get("dn") and not e["dn"].startswith("ref:")]
+
+
+# ─── Cache SID→Nome ────────────────────────────────────────────────────────────
+
+_SID_NAME_CACHE: dict = {}
+_SID_NAME_CACHE_LOADED = False
+
+
+def _decode_sid_from_b64(b64_str: str):
+    """Decodifica SID binário (base64 do ldbsearch) para formato S-1-5-..."""
+    import struct as _struct
+    try:
+        data = base64.b64decode(b64_str.strip())
+        if len(data) < 8:
+            return None
+        revision  = data[0]
+        sub_count = data[1]
+        authority = int.from_bytes(data[2:8], "big")
+        subs = []
+        for i in range(sub_count):
+            off = 8 + i * 4
+            if off + 4 > len(data):
+                break
+            subs.append(str(_struct.unpack_from("<I", data, off)[0]))
+        return "S-" + "-".join([str(revision), str(authority)] + subs)
+    except Exception:
+        return None
+
+
+def _load_sid_cache():
+    """Carrega cache SID→sAMAccountName a partir do sam.ldb (fallback quando wbinfo falha)."""
+    global _SID_NAME_CACHE, _SID_NAME_CACHE_LOADED
+    if _SID_NAME_CACHE_LOADED:
+        return
+    _SID_NAME_CACHE_LOADED = True
+    base = _ad_get_domain_dn()
+    if not base:
+        return
+    r = _ad_run_cmd([
+        os.path.join(SAMBA_BIN, "ldbsearch"), "-H",
+        os.path.join(SAMBA_PRIVATE, "sam.ldb"),
+        "-b", base, "-s", "sub",
+        "(|(objectClass=user)(objectClass=group))",
+        "sAMAccountName", "objectSid",
+    ])
+    if r["returncode"] != 0 or not r["stdout"]:
+        return
+    # Parseia manualmente para manter objectSid como base64 (binário)
+    raw_lines = r["stdout"].splitlines()
+    lines: list = []
+    for raw in raw_lines:
+        if raw.startswith(" ") and lines:
+            lines[-1] += raw[1:]
+        else:
+            lines.append(raw)
+    current_sam: str | None = None
+    current_sid_b64: str | None = None
+    def _flush():
+        if current_sam and current_sid_b64:
+            sid = _decode_sid_from_b64(current_sid_b64)
+            if sid:
+                _SID_NAME_CACHE[sid.upper()] = current_sam
+    for line in lines:
+        if not line.strip():
+            _flush()
+            current_sam = current_sid_b64 = None
+            continue
+        if line.startswith("sAMAccountName: "):
+            current_sam = line[len("sAMAccountName: "):].strip()
+        elif line.startswith("sAMAccountName:: "):
+            try:
+                current_sam = base64.b64decode(line[len("sAMAccountName:: "):].strip()).decode("utf-8", errors="replace")
+            except Exception:
+                pass
+        elif line.startswith("objectSid:: "):
+            current_sid_b64 = line[len("objectSid:: "):].strip()
+    _flush()
 
 
 def _ad_get_realm():
@@ -430,6 +550,10 @@ class _GroupManager:
         if r["returncode"] != 0: return {"error": r["stderr"]}
         return {"members": [m.strip() for m in r["stdout"].splitlines() if m.strip()]}
 
+    def move_group(self, groupname, target_ou):
+        r = _samba_tool("group", "move", groupname, target_ou)
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
 
 class _OUManager:
 
@@ -466,6 +590,13 @@ class _OUManager:
     def rename_ou(self, ou_dn, new_name):
         parent = ",".join(ou_dn.split(",")[1:])
         new_dn = f"OU={new_name},{parent}"
+        r = _ad_run_cmd([os.path.join(SAMBA_BIN, "ldbrename"), "-H",
+                         os.path.join(SAMBA_PRIVATE, "sam.ldb"), ou_dn, new_dn])
+        return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
+
+    def move_ou(self, ou_dn, target_parent_dn):
+        rdn    = ou_dn.split(",")[0]          # e.g. "OU=TestOU"
+        new_dn = f"{rdn},{target_parent_dn}"
         r = _ad_run_cmd([os.path.join(SAMBA_BIN, "ldbrename"), "-H",
                          os.path.join(SAMBA_PRIVATE, "sam.ldb"), ou_dn, new_dn])
         return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
@@ -510,7 +641,7 @@ class _OUManager:
     def get_ou_objects(self, ou_dn):
         r = _ldbsearch(ou_dn, "one",
                        ["distinguishedName","objectClass","cn","sAMAccountName",
-                        "description","name","userAccountControl","groupType"], None)
+                        "displayName","description","name","userAccountControl","groupType"], None)
         if r["returncode"] != 0: return {"error": r["stderr"]}
         objects = []
         for entry in _parse_ldb_output(r["stdout"]):
@@ -1356,17 +1487,17 @@ class _ShareManager:
         "WR":"WRITE RESTRICTED",   "LS":"LOCAL SERVICE",       "IU":"Interactive",
     }
     _PERM_BITS = [
-        (0x1F01FF, "Full Control"), (0x1301BF, "Modify"),
-        (0x1200A9, "Read & Execute"), (0x120116, "Write"), (0x120089, "Read"),
+        (0x1F01FF, "Controle Total"), (0x1301BF, "Modificar"),
+        (0x1200A9, "Leitura e Execução"), (0x120116, "Gravação"), (0x120089, "Leitura"),
     ]
     _GRANULAR_BITS = [
-        (0x00001, "List Folder / Read Data"),        (0x00002, "Create Files / Write Data"),
-        (0x00004, "Create Folders / Append Data"),   (0x00008, "Read Extended Attributes"),
-        (0x00010, "Write Extended Attributes"),      (0x00020, "Traverse Folder / Execute File"),
-        (0x00040, "Delete Subfolders and Files"),    (0x00080, "Read Attributes"),
-        (0x00100, "Write Attributes"),               (0x10000, "Delete"),
-        (0x20000, "Read Permissions"),               (0x40000, "Change Permissions"),
-        (0x80000, "Take Ownership"),
+        (0x00001, "Listar Pasta / Ler Dados"),           (0x00002, "Criar Arquivos / Gravar Dados"),
+        (0x00004, "Criar Pastas / Acrescentar Dados"),   (0x00008, "Ler Atributos Estendidos"),
+        (0x00010, "Gravar Atributos Estendidos"),        (0x00020, "Atravessar Pasta / Executar Arquivo"),
+        (0x00040, "Excluir Subpastas e Arquivos"),       (0x00080, "Ler Atributos"),
+        (0x00100, "Gravar Atributos"),                   (0x10000, "Excluir"),
+        (0x20000, "Ler Permissões"),                     (0x40000, "Alterar Permissões"),
+        (0x80000, "Apropriar-se"),
     ]
     _APPLIES_MAP = {
         "this_folder_only":             "",
@@ -1389,6 +1520,11 @@ class _ShareManager:
         if r["returncode"] == 0:
             for p in r["stdout"].strip().split():
                 if p.upper().startswith("S-"): return p
+        # Fallback: busca inversa no cache (nome → SID)
+        _load_sid_cache()
+        for sid, name in _SID_NAME_CACHE.items():
+            if name.lower() == lp.lower():
+                return sid
         return lp
 
     def _sid_to_name(self, sid):
@@ -1399,6 +1535,11 @@ class _ShareManager:
         if r["returncode"] == 0 and r["stdout"].strip():
             name = r["stdout"].strip().split("\\")[-1]
             return name.split(" ")[0]
+        # Fallback: cache construído decodificando SIDs binários do sam.ldb
+        _load_sid_cache()
+        cached = _SID_NAME_CACHE.get(s.upper())
+        if cached:
+            return cached
         return s
 
     def _mask_to_permissions(self, mask):
@@ -1496,6 +1637,30 @@ class _ShareManager:
         r = _samba_tool("ntacl", "set", sddl, local_path)
         return {"ok": r["returncode"] == 0, "output": r["stdout"] + r["stderr"]}
 
+    def _child_flags(self, applies_to, is_dir):
+        """Returns the inherited ACE flags for a child item, or None if the item should be skipped."""
+        if applies_to == "this_folder_only":
+            return None
+        include_dirs  = applies_to in ("this_folder_subfolders_files", "this_folder_subfolders",
+                                       "subfolders_files_only", "subfolders_only")
+        include_files = applies_to in ("this_folder_subfolders_files", "this_folder_files",
+                                       "subfolders_files_only", "files_only")
+        if is_dir:
+            return "OICIID" if include_dirs else None
+        else:
+            return "OIID" if include_files else None
+
+    def _apply_ace_to_path(self, path, ace_type, sid, mask, flags):
+        """Adds a pre-resolved ACE to a single path (no SID resolution, no recursion)."""
+        r_acl = self.get_ntfs_acl(path)
+        if r_acl.get("error"): return
+        acl = r_acl["acl"]
+        new_ace = {"type": "A" if ace_type.lower() in ("allow", "a") else "D",
+                   "flags": flags, "rights": hex(mask), "sid": sid}
+        acl["dacl"].insert(0, new_ace)
+        sddl = self._rebuild_sddl(acl["owner_sid"], acl["group_sid"], acl["dacl"], acl["sacl"], acl.get("dacl_flags", ""))
+        self.set_ntfs_acl(path, sddl)
+
     def add_ace(self, local_path, ace_type, principal, permissions, applies_to="this_folder_subfolders_files"):
         r_acl = self.get_ntfs_acl(local_path)
         if r_acl.get("error"): return r_acl
@@ -1507,7 +1672,17 @@ class _ShareManager:
                    "flags": flags, "rights": hex(mask), "sid": sid}
         acl["dacl"].insert(0, new_ace)
         sddl = self._rebuild_sddl(acl["owner_sid"], acl["group_sid"], acl["dacl"], acl["sacl"], acl.get("dacl_flags",""))
-        return self.set_ntfs_acl(local_path, sddl)
+        r = self.set_ntfs_acl(local_path, sddl)
+        # Propagar para subpastas/arquivos existentes
+        if r.get("ok") and applies_to != "this_folder_only" and os.path.isdir(local_path):
+            for root, dirs, files in os.walk(local_path):
+                for name in dirs:
+                    cf = self._child_flags(applies_to, is_dir=True)
+                    if cf: self._apply_ace_to_path(os.path.join(root, name), ace_type, sid, mask, cf)
+                for name in files:
+                    cf = self._child_flags(applies_to, is_dir=False)
+                    if cf: self._apply_ace_to_path(os.path.join(root, name), ace_type, sid, mask, cf)
+        return r
 
     def remove_ace(self, local_path, ace_index):
         r_acl = self.get_ntfs_acl(local_path)
@@ -1530,7 +1705,17 @@ class _ShareManager:
                 a["flags"] = flags; a["rights"] = hex(mask); a["sid"] = sid
                 break
         sddl = self._rebuild_sddl(acl["owner_sid"], acl["group_sid"], acl["dacl"], acl["sacl"], acl.get("dacl_flags",""))
-        return self.set_ntfs_acl(local_path, sddl)
+        r = self.set_ntfs_acl(local_path, sddl)
+        # Propagar para subpastas/arquivos existentes
+        if r.get("ok") and applies_to != "this_folder_only" and os.path.isdir(local_path):
+            for root, dirs, files in os.walk(local_path):
+                for name in dirs:
+                    cf = self._child_flags(applies_to, is_dir=True)
+                    if cf: self._apply_ace_to_path(os.path.join(root, name), ace_type, sid, mask, cf)
+                for name in files:
+                    cf = self._child_flags(applies_to, is_dir=False)
+                    if cf: self._apply_ace_to_path(os.path.join(root, name), ace_type, sid, mask, cf)
+        return r
 
     def set_owner(self, local_path, new_owner, recursive=False):
         r_acl = self.get_ntfs_acl(local_path)
@@ -1842,7 +2027,12 @@ class ShellSession:
             os.dup2(slave_fd, 2)
             if slave_fd > 2:
                 os.close(slave_fd)
-            os.execv("/bin/login", ["/bin/login", "-p"])
+            env = os.environ.copy()
+            env['TERM'] = 'xterm-256color'
+            env['COLORTERM'] = 'truecolor'
+            env['COLUMNS'] = str(cols)
+            env['LINES'] = str(rows)
+            os.execve("/bin/login", ["/bin/login", "-p"], env)
             sys.exit(1)
 
         # ── Processo pai ──
@@ -2392,6 +2582,7 @@ class LinuxAgent:
             "group_add_member":    lambda p: self._ad_groups.add_member(p["groupname"], p["member"]),
             "group_remove_member": lambda p: self._ad_groups.remove_member(p["groupname"], p["member"]),
             "group_members":       lambda p: self._ad_groups.list_members(p["groupname"]),
+            "group_move":          lambda p: self._ad_groups.move_group(p["groupname"], p["target_ou"]),
             "ou_list":             lambda p: self._ad_ous.list_ous(),
             "ou_tree":             lambda p: self._ad_ous.get_ou_tree(),
             "ou_objects":          lambda p: self._ad_ous.get_ou_objects(p["ou_dn"]),
@@ -2399,6 +2590,7 @@ class LinuxAgent:
                                        p["ou_name"], p.get("parent_dn",""), p.get("description","")),
             "ou_delete":           lambda p: self._ad_ous.delete_ou(p["ou_dn"], p.get("recursive", False)),
             "ou_rename":           lambda p: self._ad_ous.rename_ou(p["ou_dn"], p["new_name"]),
+            "ou_move":             lambda p: self._ad_ous.move_ou(p["ou_dn"], p["target_parent_dn"]),
             "gpo_list":            lambda p: self._ad_gpos.list_gpos(),
             "gpo_get":             lambda p: self._ad_gpos.get_gpo(p["gpo_guid"]),
             "gpo_create":          lambda p: self._ad_gpos.create_gpo(p["display_name"]),
