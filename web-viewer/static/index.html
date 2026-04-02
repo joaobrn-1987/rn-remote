@@ -9,7 +9,7 @@
     <title>RN Remote - Acesso Remoto</title>
     <script>
         // Força reload se a versão do app mudou desde a última visita
-        const _APP_BUILD = '20260402-3';
+        const _APP_BUILD = '20260402-4';
         if (sessionStorage.getItem('app_build') !== _APP_BUILD) {
             sessionStorage.setItem('app_build', _APP_BUILD);
             if (performance.navigation ? performance.navigation.type !== 1 : !sessionStorage.getItem('_reloaded')) {
@@ -636,7 +636,8 @@
 
 <!-- Admin Auth Overlay -->
 <div class="auth-overlay" id="authOverlay">
-    <div class="auth-box">
+    <!-- Passo 1: Login -->
+    <div class="auth-box" id="authStep1">
         <h2>&#128274; RN Remote</h2>
         <p>Faça login para acessar o sistema.</p>
         <div class="form-group">
@@ -651,6 +652,24 @@
         </div>
         <button class="btn btn-primary" id="btnAdminLogin" onclick="doAdminLogin()">Entrar</button>
         <div class="auth-error" id="authError"></div>
+    </div>
+    <!-- Passo 2: MFA -->
+    <div class="auth-box" id="authStep2" style="display:none">
+        <h2>&#128274; Verificação MFA</h2>
+        <p id="mfaInfoText" style="font-size:13px;color:var(--text-dim);margin-bottom:16px">Um código de 8 dígitos foi enviado para seu e-mail.</p>
+        <div class="form-group">
+            <label>Código de verificação</label>
+            <input type="text" id="mfaCode" placeholder="00000000" maxlength="8" autocomplete="one-time-code"
+                style="font-size:22px;letter-spacing:6px;text-align:center;font-family:monospace"
+                onkeydown="if(event.key==='Enter')doMfaVerify()">
+        </div>
+        <button class="btn btn-primary" id="btnMfaVerify" onclick="doMfaVerify()">Verificar</button>
+        <div style="margin-top:12px;text-align:center">
+            <a href="#" onclick="doMfaResend();return false" style="font-size:12px;color:var(--accent)">Reenviar código</a>
+            &nbsp;·&nbsp;
+            <a href="#" onclick="mfaBack();return false" style="font-size:12px;color:var(--text-dim)">Voltar ao login</a>
+        </div>
+        <div class="auth-error" id="mfaError"></div>
     </div>
 </div>
 
@@ -1217,6 +1236,17 @@
         <input type="text" id="admGroupDesc" placeholder="Descrição opcional">
         <label>Cor</label>
         <div class="color-opts" id="admColorOpts"></div>
+        <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                <input type="checkbox" id="admGroupAlertEnabled" style="width:16px;height:16px;accent-color:var(--accent)">
+                <label for="admGroupAlertEnabled" style="font-weight:600;font-size:13px;cursor:pointer;margin:0">Exibir alerta ao conectar neste grupo</label>
+            </div>
+            <div id="admGroupAlertMsgWrap">
+                <label>Mensagem de alerta</label>
+                <textarea id="admGroupAlertMessage" rows="3" placeholder="Ex: Apenas para manutenção autorizada."
+                    style="width:100%;box-sizing:border-box;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;padding:8px;resize:vertical"></textarea>
+            </div>
+        </div>
         <div class="adm-modal-footer">
             <button class="btn btn-sm btn-ghost" onclick="admCloseGroupModal()">Cancelar</button>
             <button class="btn btn-sm btn-accent" onclick="admSaveGroup()">Salvar</button>
@@ -1275,6 +1305,10 @@
         <div class="form-group" style="display:flex;align-items:center;gap:10px">
             <input type="checkbox" id="userModalActive" checked style="width:auto">
             <label for="userModalActive" style="margin:0;text-transform:none;font-size:13px;color:var(--text)">Ativo</label>
+        </div>
+        <div class="form-group" style="display:flex;align-items:center;gap:10px;padding-top:6px;border-top:1px solid var(--border)">
+            <input type="checkbox" id="userModalMfa" style="width:auto;accent-color:var(--accent)">
+            <label for="userModalMfa" style="margin:0;text-transform:none;font-size:13px;color:var(--text)">&#128274; Autenticação MFA por e-mail</label>
         </div>
         <div class="error-msg" id="userModalError"></div>
         <div class="modal-actions">
@@ -2908,11 +2942,18 @@ function renderCards(agents) {
 }
 
 function openConnectPrompt(agentId, name) {
+    // Prioridade: alerta do grupo > alerta do cliente
+    const groupId = agentGroupMap[agentId];
+    if (groupId !== undefined) {
+        const groupAlert = groupAlertMap[groupId];
+        if (groupAlert && groupAlert.alert_enabled) {
+            showClientAlert(groupAlert.alert_message, () => { _doOpenConnectPrompt(agentId, name); });
+            return;
+        }
+    }
     const alertInfo = agentClientAlertMap[agentId];
     if (alertInfo && alertInfo.alert_enabled) {
-        showClientAlert(alertInfo.alert_message, () => {
-            _doOpenConnectPrompt(agentId, name);
-        });
+        showClientAlert(alertInfo.alert_message, () => { _doOpenConnectPrompt(agentId, name); });
         return;
     }
     _doOpenConnectPrompt(agentId, name);
@@ -3173,6 +3214,8 @@ let activeClientFilter = 'all'; // 'all' | 'none' | '<client_id>'
 let activeGroupFilter  = null;  // null | { clientId, groupId }
 let clientAgentMap = {};         // { client_id: Set<agent_id> }
 let groupAgentMap  = {};         // { group_id:  Set<agent_id> }
+let groupAlertMap  = {};         // { group_id:  {alert_enabled, alert_message} }
+let agentGroupMap  = {};         // { agent_id:  group_id }  — qual grupo cada agente pertence
 let clientList = [];             // [{id, name, alert_enabled, alert_message}]
 let agentClientAlertMap = {};    // { agent_id: {alert_enabled, alert_message} }
 
@@ -3241,6 +3284,8 @@ async function loadClientSidebar() {
         clientAgentMap = {};
         agentClientAlertMap = {};
         groupAgentMap = {};
+        groupAlertMap = {};
+        agentGroupMap = {};
 
         await Promise.all(clientList.map(async c => {
             try {
@@ -3258,12 +3303,16 @@ async function loadClientSidebar() {
                     });
                 }
                 c._groups = Array.isArray(groups) ? groups : [];
-                // Para cada grupo, carrega seus agentes
+                // Para cada grupo, carrega seus agentes e registra alertas
                 await Promise.all(c._groups.map(async g => {
                     try {
                         const rg = await fetch(`/api/groups/${g.id}/agents`, { headers: { 'Authorization': 'Bearer ' + token } });
                         const ga = await rg.json();
-                        groupAgentMap[g.id] = new Set((Array.isArray(ga) ? ga : []).map(a => a.agent_id));
+                        const gids = new Set((Array.isArray(ga) ? ga : []).map(a => a.agent_id));
+                        groupAgentMap[g.id] = gids;
+                        // Registra alerta do grupo e mapeia agente → grupo
+                        groupAlertMap[g.id] = { alert_enabled: !!g.alert_enabled, alert_message: g.alert_message || '' };
+                        gids.forEach(aid => { agentGroupMap[aid] = g.id; });
                     } catch(e) { groupAgentMap[g.id] = new Set(); }
                 }));
             } catch(e) { clientAgentMap[c.id] = new Set(); }
@@ -3358,6 +3407,7 @@ function openUserModal(user) {
     document.getElementById('userModalPassConfirm').value = '';
     document.getElementById('userModalPassConfirmWrap').style.display = 'none';
     document.getElementById('userModalActive').checked = isEdit ? !!user.is_active : true;
+    document.getElementById('userModalMfa').checked = isEdit ? !!user.mfa_enabled : false;
     document.getElementById('userModalError').style.display = 'none';
     document.getElementById('userModalPassHint').style.display = isEdit ? 'inline' : 'none';
     // Master: oculta seletor de perfil; outros: carrega perfis
@@ -3392,7 +3442,8 @@ async function saveUserModal() {
 
     const profileWrap = document.getElementById('userModalProfileWrap');
     const profileId = (profileWrap && profileWrap.style.display === 'none') ? undefined : document.getElementById('userModalProfile').value;
-    const body = { email, display_name: name, role, is_active: active };
+    const mfaEnabled = document.getElementById('userModalMfa').checked;
+    const body = { email, display_name: name, role, is_active: active, mfa_enabled: mfaEnabled };
     if (profileId !== undefined) body.profile_id = profileId || null;
     if (pass) body.password = pass;
 
@@ -3445,6 +3496,8 @@ setInterval(() => {
 
 // ─── Autenticação Admin ───
 
+let _mfaSession = null;
+
 async function doAdminLogin() {
     const email    = document.getElementById('authEmail').value.trim();
     const password = document.getElementById('authPass').value;
@@ -3469,12 +3522,15 @@ async function doAdminLogin() {
         });
         const data = await res.json();
 
-        if (data.ok) {
-            localStorage.setItem('auth_token', data.token);
-            localStorage.setItem('auth_user',  data.user);
-            if (data.permissions) localStorage.setItem('user_permissions', JSON.stringify(data.permissions));
-            showAuthenticatedUI(data.user);
-            admApplyPermissions(data.permissions);
+        if (data.ok && data.mfa_required) {
+            _mfaSession = data.mfa_session;
+            document.getElementById('authStep1').style.display = 'none';
+            document.getElementById('authStep2').style.display = 'block';
+            document.getElementById('mfaCode').value = '';
+            document.getElementById('mfaError').style.display = 'none';
+            setTimeout(() => document.getElementById('mfaCode').focus(), 50);
+        } else if (data.ok) {
+            _applyLoginData(data);
         } else {
             errEl.textContent = data.error || 'Credenciais inválidas.';
             errEl.style.display = 'block';
@@ -3486,6 +3542,66 @@ async function doAdminLogin() {
         btn.disabled = false;
         btn.textContent = 'Entrar';
     }
+}
+
+async function doMfaVerify() {
+    const code  = document.getElementById('mfaCode').value.trim();
+    const errEl = document.getElementById('mfaError');
+    const btn   = document.getElementById('btnMfaVerify');
+    if (!code) { errEl.textContent = 'Digite o código.'; errEl.style.display = 'block'; return; }
+    btn.disabled = true; btn.textContent = 'Verificando...'; errEl.style.display = 'none';
+    try {
+        const res  = await fetch('/api/mfa/verify', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mfa_session: _mfaSession, code })
+        });
+        const data = await res.json();
+        if (data.ok) {
+            _applyLoginData(data);
+        } else {
+            errEl.textContent = data.error || 'Código inválido.';
+            errEl.style.display = 'block';
+        }
+    } catch(e) {
+        errEl.textContent = 'Erro ao verificar código.'; errEl.style.display = 'block';
+    } finally {
+        btn.disabled = false; btn.textContent = 'Verificar';
+    }
+}
+
+async function doMfaResend() {
+    const errEl = document.getElementById('mfaError');
+    errEl.style.display = 'none';
+    try {
+        const res  = await fetch('/api/mfa/resend', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mfa_session: _mfaSession })
+        });
+        const data = await res.json();
+        if (data.ok) {
+            document.getElementById('mfaInfoText').textContent = 'Novo código enviado para seu e-mail.';
+            document.getElementById('mfaCode').value = '';
+            document.getElementById('mfaCode').focus();
+        } else {
+            errEl.textContent = data.error || 'Erro ao reenviar.'; errEl.style.display = 'block';
+            if (data.error && data.error.includes('expirada')) mfaBack();
+        }
+    } catch(e) { errEl.textContent = 'Erro ao reenviar.'; errEl.style.display = 'block'; }
+}
+
+function mfaBack() {
+    _mfaSession = null;
+    document.getElementById('authStep2').style.display = 'none';
+    document.getElementById('authStep1').style.display = 'block';
+    document.getElementById('mfaInfoText').textContent = 'Um código de 8 dígitos foi enviado para seu e-mail.';
+}
+
+function _applyLoginData(data) {
+    localStorage.setItem('auth_token', data.token);
+    localStorage.setItem('auth_user',  data.user);
+    if (data.permissions) localStorage.setItem('user_permissions', JSON.stringify(data.permissions));
+    showAuthenticatedUI(data.user);
+    admApplyPermissions(data.permissions);
 }
 
 function showAuthenticatedUI(userName) {
@@ -7382,22 +7498,62 @@ function loadUsers() { admLoadUsers(); }
 async function admLoadSettings() {
     const s = await (await fetch('/api/settings')).json();
     const labels = {'max_agents':'Máx. Agentes','max_sessions_per_agent':'Máx. Sessões/Agente','session_timeout_minutes':'Timeout Sessão (min)','screen_default_quality':'Qualidade de Tela','screen_default_fps':'FPS Padrão','require_password':'Exigir Senha','allow_file_transfer':'Permitir Transferência de Arquivos','allow_shell':'Permitir Shell'};
-    let h = '';
+    const smtpKeys = new Set(['smtp_host','smtp_port','smtp_user','smtp_pass','smtp_from','smtp_tls']);
+    let h = '<h3 style="font-size:14px;margin:0 0 12px;color:var(--text-bright)">Geral</h3>';
     for (const [k,v] of Object.entries(s)) {
-        h += `<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)">
+        if (smtpKeys.has(k)) continue;
+        h += `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
             <span style="font-size:13px">${labels[k]||k}</span>
-            <input style="width:130px;padding:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text);text-align:right;font-size:13px" value="${v}" data-key="${k}">
+            <input style="width:130px;padding:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text);text-align:right;font-size:13px" value="${escapeHtml(v)}" data-key="${k}">
         </div>`;
     }
-    h += `<button class="btn btn-sm btn-accent" style="margin-top:16px" onclick="admSaveSettings()">Salvar</button>`;
+    const smtpFields = [
+        {k:'smtp_host',   label:'Servidor SMTP',        ph:'smtp.gmail.com',    type:'text'},
+        {k:'smtp_port',   label:'Porta',                ph:'587',               type:'number'},
+        {k:'smtp_user',   label:'Usuário / E-mail',     ph:'seu@email.com',     type:'email'},
+        {k:'smtp_pass',   label:'Senha / App Password', ph:'••••••••',          type:'password'},
+        {k:'smtp_from',   label:'Remetente (opcional)', ph:'RN Remote <noreply@>', type:'text'},
+        {k:'smtp_tls',    label:'STARTTLS (true/false)', ph:'true',             type:'text'},
+    ];
+    h += `<h3 style="font-size:14px;margin:20px 0 12px;color:var(--text-bright)">&#128274; SMTP — MFA por E-mail</h3>`;
+    for (const f of smtpFields) {
+        const val = s[f.k] || '';
+        h += `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:13px">${f.label}</span>
+            <input type="${f.type}" style="width:200px;padding:6px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px" value="${f.type==='password'?'':escapeHtml(val)}" placeholder="${f.ph}" data-key="${f.k}" ${f.type==='password'?'autocomplete="new-password"':''}>
+        </div>`;
+    }
+    h += `<div style="margin-top:16px;display:flex;gap:10px">
+        <button class="btn btn-sm btn-accent" onclick="admSaveSettings()">Salvar</button>
+        <button class="btn btn-sm btn-ghost" onclick="admTestSmtp()">Testar SMTP</button>
+    </div>`;
     document.getElementById('admSettingsForm').innerHTML = h;
 }
 
 async function admSaveSettings() {
     const data = {};
-    document.querySelectorAll('#admSettingsForm input').forEach(i => data[i.dataset.key] = i.value);
-    await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)});
+    document.querySelectorAll('#admSettingsForm input[data-key]').forEach(i => {
+        if (i.type === 'password' && !i.value) return; // não sobrescreve senha vazia
+        data[i.dataset.key] = i.value;
+    });
+    await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+admGetToken()}, body:JSON.stringify(data)});
     alert('Configurações salvas!');
+}
+
+async function admTestSmtp() {
+    const token = admGetToken();
+    const email = prompt('Digite o e-mail de destino para teste:');
+    if (!email) return;
+    // Salva primeiro, depois testa via rota MFA resend simulada
+    await admSaveSettings();
+    try {
+        const res = await fetch('/api/mfa/test-smtp', {
+            method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+            body: JSON.stringify({to_email: email})
+        });
+        const d = await res.json();
+        alert(d.ok ? 'E-mail de teste enviado com sucesso!' : ('Erro: ' + d.error));
+    } catch(e) { alert('Erro ao testar SMTP: ' + e); }
 }
 
 // ── Grupos ────────────────────────────────────────────
@@ -7413,7 +7569,7 @@ async function admLoadGroups() {
         <td>${admFmtDate(g.created_at)}</td>
         <td style="display:flex;gap:6px">
             <button class="btn btn-sm btn-accent" onclick="admOpenGroupAgents(${g.id},'${admEscQ(g.name)}')">&#128101; Agentes</button>
-            <button class="btn btn-sm btn-warn" onclick="admOpenEditGroup(${g.id},'${admEscQ(g.name)}','${admEscQ(g.description||'')}','${g.color}')">&#9998;</button>
+            <button class="btn btn-sm btn-warn" onclick="admOpenEditGroup(${g.id},'${admEscQ(g.name)}','${admEscQ(g.description||'')}','${g.color}',${!!g.alert_enabled},'${admEscQ(g.alert_message||'')}')">&#9998;</button>
             <button class="btn btn-sm btn-danger" onclick="admRemoveGroup(${g.id},'${admEscQ(g.name)}')">&#128465;</button>
         </td>
     </tr>`).join('') || '<tr><td colspan="6" style="color:var(--text-dim);padding:12px">Nenhum grupo criado</td></tr>';
@@ -7440,16 +7596,20 @@ function admOpenCreateGroup() {
     document.getElementById('admGroupId').value = '';
     document.getElementById('admGroupName').value = '';
     document.getElementById('admGroupDesc').value = '';
+    document.getElementById('admGroupAlertEnabled').checked = false;
+    document.getElementById('admGroupAlertMessage').value = '';
     document.getElementById('admGroupErr').style.display = 'none';
     admSelectColor(ADM_GROUP_COLORS[0]);
     document.getElementById('admGroupModal').classList.add('open');
 }
 
-function admOpenEditGroup(id, name, desc, color) {
+function admOpenEditGroup(id, name, desc, color, alertEnabled, alertMessage) {
     document.getElementById('admGroupModalTitle').textContent = 'Editar Grupo';
     document.getElementById('admGroupId').value = id;
     document.getElementById('admGroupName').value = name;
     document.getElementById('admGroupDesc').value = desc;
+    document.getElementById('admGroupAlertEnabled').checked = !!alertEnabled;
+    document.getElementById('admGroupAlertMessage').value = alertMessage || '';
     document.getElementById('admGroupErr').style.display = 'none';
     admSelectColor(color);
     document.getElementById('admGroupModal').classList.add('open');
@@ -7462,7 +7622,9 @@ async function admSaveGroup() {
     const payload = {
         name: document.getElementById('admGroupName').value.trim(),
         description: document.getElementById('admGroupDesc').value.trim(),
-        color: admSelectedColor()
+        color: admSelectedColor(),
+        alert_enabled: document.getElementById('admGroupAlertEnabled').checked,
+        alert_message: document.getElementById('admGroupAlertMessage').value.trim()
     };
     const errEl = document.getElementById('admGroupErr');
     if (!payload.name) { errEl.textContent = 'Nome obrigatório'; errEl.style.display = 'block'; return; }

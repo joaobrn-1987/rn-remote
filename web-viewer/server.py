@@ -13,6 +13,11 @@ import time
 import hmac
 import hashlib
 import secrets
+import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime, timezone
 
 from aiohttp import web
 
@@ -67,6 +72,65 @@ def _verify_token(token: str) -> bool:
         return False
 
 
+# ─── MFA: armazena códigos temporários em memória ───
+# { mfa_session_token: { user_id, code, expires_at, user_data } }
+_mfa_pending: dict = {}
+
+MFA_CODE_TTL = 600  # 10 minutos
+
+
+def _mfa_cleanup():
+    now = time.time()
+    expired = [k for k, v in _mfa_pending.items() if v['expires_at'] < now]
+    for k in expired:
+        del _mfa_pending[k]
+
+
+async def _send_mfa_email(to_email: str, code: str, smtp_cfg: dict):
+    """Envia o código MFA por e-mail via SMTP configurado nas settings."""
+    host = smtp_cfg.get('smtp_host', '')
+    port = int(smtp_cfg.get('smtp_port', 587))
+    user = smtp_cfg.get('smtp_user', '')
+    password = smtp_cfg.get('smtp_pass', '')
+    from_addr = smtp_cfg.get('smtp_from', user)
+    use_tls = smtp_cfg.get('smtp_tls', 'true').lower() in ('true', '1', 'yes')
+
+    if not host or not user:
+        raise ValueError("SMTP não configurado. Configure em Configurações > SMTP.")
+
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = 'Seu código de acesso — RN Remote'
+    msg['From'] = from_addr or user
+    msg['To'] = to_email
+
+    body_text = f"Seu código de verificação é: {code}\n\nEste código expira em 10 minutos."
+    body_html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:420px;margin:40px auto;background:#f0f4fa;border-radius:12px;padding:32px;border:1px solid #dde3ee">
+      <h2 style="margin:0 0 8px;color:#1e293b;font-size:20px">&#128274; RN Remote</h2>
+      <p style="color:#475569;margin:0 0 24px;font-size:14px">Código de verificação de acesso</p>
+      <div style="background:#fff;border-radius:10px;padding:20px 24px;text-align:center;border:1px solid #dde3ee;margin-bottom:24px">
+        <span style="font-size:36px;font-weight:700;letter-spacing:10px;color:#2563eb;font-family:monospace">{code}</span>
+      </div>
+      <p style="color:#64748b;font-size:13px;margin:0">Este código expira em <strong>10 minutos</strong>. Se não foi você, ignore este e-mail.</p>
+    </div>"""
+
+    msg.attach(MIMEText(body_text, 'plain'))
+    msg.attach(MIMEText(body_html, 'html'))
+
+    loop = asyncio.get_event_loop()
+    def _send():
+        if use_tls:
+            srv = smtplib.SMTP(host, port)
+            srv.ehlo()
+            srv.starttls()
+        else:
+            srv = smtplib.SMTP_SSL(host, port)
+        srv.login(user, password)
+        srv.sendmail(msg['From'], [to_email], msg.as_string())
+        srv.quit()
+    await loop.run_in_executor(None, _send)
+
+
 class WebPanel:
 
     def __init__(self, db_dsn: str):
@@ -96,8 +160,37 @@ class WebPanel:
             hash_password(data.get("password", ""))
         )
         if user:
+            # Se MFA estiver ativo, enviar código por e-mail
+            if user.get('mfa_enabled'):
+                _mfa_cleanup()
+                code = ''.join([str(random.randint(0, 9)) for _ in range(8)])
+                mfa_session = secrets.token_hex(24)
+                if user['email'] == 'app@rochaneto.com' or user.get('role') == 'superadmin':
+                    permissions = {'*': True}
+                else:
+                    permissions = await self.db.get_user_permissions(user['id'])
+                _mfa_pending[mfa_session] = {
+                    'user_id': user['id'],
+                    'code': code,
+                    'expires_at': time.time() + MFA_CODE_TTL,
+                    'user_data': {
+                        'token': _generate_token(user['id'], user['email']),
+                        'user': user['display_name'] or user['email'],
+                        'role': user['role'],
+                        'user_id': user['id'],
+                        'profile_id': user.get('profile_id'),
+                        'permissions': permissions,
+                    }
+                }
+                try:
+                    smtp_cfg = await self.db.get_all_settings()
+                    await _send_mfa_email(user['email'], code, smtp_cfg)
+                except Exception as e:
+                    logger.error("Erro ao enviar MFA: %s", e)
+                    return web.json_response({"ok": False, "error": f"Erro ao enviar código MFA: {e}"}, status=500)
+                return web.json_response({"ok": True, "mfa_required": True, "mfa_session": mfa_session})
+
             token = _generate_token(user['id'], user['email'])
-            # Usuário master tem controle total — permissões ilimitadas
             if user['email'] == 'app@rochaneto.com' or user.get('role') == 'superadmin':
                 permissions = {'*': True}
             else:
@@ -110,6 +203,55 @@ class WebPanel:
                 "permissions": permissions
             })
         return web.json_response({"ok": False, "error": "Credenciais inválidas"}, status=401)
+
+    async def api_mfa_verify(self, req):
+        data = await req.json()
+        mfa_session = data.get("mfa_session", "")
+        code = data.get("code", "").strip()
+        _mfa_cleanup()
+        entry = _mfa_pending.get(mfa_session)
+        if not entry:
+            return web.json_response({"ok": False, "error": "Sessão MFA expirada. Faça login novamente."}, status=401)
+        if entry['code'] != code:
+            return web.json_response({"ok": False, "error": "Código inválido."}, status=401)
+        del _mfa_pending[mfa_session]
+        return web.json_response({"ok": True, **entry['user_data']})
+
+    async def api_mfa_test_smtp(self, req):
+        if not self._require_auth(req):
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        data = await req.json()
+        to_email = data.get("to_email", "").strip()
+        if not to_email:
+            return web.json_response({"ok": False, "error": "E-mail obrigatório"}, status=400)
+        try:
+            smtp_cfg = await self.db.get_all_settings()
+            code = "12345678"
+            await _send_mfa_email(to_email, code, smtp_cfg)
+            return web.json_response({"ok": True})
+        except Exception as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+    async def api_mfa_resend(self, req):
+        data = await req.json()
+        mfa_session = data.get("mfa_session", "")
+        _mfa_cleanup()
+        entry = _mfa_pending.get(mfa_session)
+        if not entry:
+            return web.json_response({"ok": False, "error": "Sessão MFA expirada. Faça login novamente."}, status=401)
+        # Novo código
+        code = ''.join([str(random.randint(0, 9)) for _ in range(8)])
+        entry['code'] = code
+        entry['expires_at'] = time.time() + MFA_CODE_TTL
+        user = await self.db.get_admin_user_by_id(entry['user_id'])
+        if not user:
+            return web.json_response({"ok": False, "error": "Usuário não encontrado."}, status=404)
+        try:
+            smtp_cfg = await self.db.get_all_settings()
+            await _send_mfa_email(user['email'], code, smtp_cfg)
+        except Exception as e:
+            return web.json_response({"ok": False, "error": f"Erro ao reenviar código: {e}"}, status=500)
+        return web.json_response({"ok": True})
 
     async def api_verify(self, req):
         auth = req.headers.get("Authorization", "")
@@ -285,6 +427,8 @@ class WebPanel:
             kwargs["role"] = data["role"]
         if "is_active" in data:
             kwargs["is_active"] = bool(data["is_active"])
+        if "mfa_enabled" in data:
+            kwargs["mfa_enabled"] = bool(data["mfa_enabled"])
         await self.db.update_admin_user(user_id, **kwargs)
         if "profile_id" in data:
             pid = int(data["profile_id"]) if data["profile_id"] else None
@@ -403,7 +547,9 @@ class WebPanel:
             cid = data.get("client_id")
             group = await self.db.create_group(
                 name, data.get("description", ""), data.get("color", "#3b82f6"),
-                client_id=int(cid) if cid else None
+                client_id=int(cid) if cid else None,
+                alert_enabled=bool(data.get("alert_enabled", False)),
+                alert_message=data.get("alert_message", "")
             )
             for k, v in group.items():
                 if hasattr(v, 'isoformat'):
@@ -416,12 +562,15 @@ class WebPanel:
         group_id = int(req.match_info['group_id'])
         data = await req.json()
         cid = data.get("client_id")
+        alert_enabled = data.get("alert_enabled")
         await self.db.update_group(
             group_id,
             name=data.get("name"),
             description=data.get("description"),
             color=data.get("color"),
-            client_id=int(cid) if cid else None
+            client_id=int(cid) if cid else None,
+            alert_enabled=bool(alert_enabled) if alert_enabled is not None else None,
+            alert_message=data.get("alert_message")
         )
         return web.json_response({"ok": True})
 
@@ -577,6 +726,9 @@ def create_app(db_dsn: str):
 
     # API
     app.router.add_post("/api/login", panel.api_login)
+    app.router.add_post("/api/mfa/verify", panel.api_mfa_verify)
+    app.router.add_post("/api/mfa/resend", panel.api_mfa_resend)
+    app.router.add_post("/api/mfa/test-smtp", panel.api_mfa_test_smtp)
     app.router.add_get("/api/verify", panel.api_verify)
     app.router.add_post("/api/agents/provision", panel.api_provision_agent)
     app.router.add_get("/api/stats", panel.api_stats)

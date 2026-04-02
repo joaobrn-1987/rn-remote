@@ -321,7 +321,7 @@ class Database:
     async def get_all_admin_users(self) -> List[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT id, email, display_name, role, is_active, last_login, created_at
+                """SELECT id, email, display_name, role, is_active, mfa_enabled, last_login, created_at
                    FROM admin_users ORDER BY created_at"""
             )
             return [dict(r) for r in rows]
@@ -341,7 +341,8 @@ class Database:
 
     async def update_admin_user(self, user_id: int, email: str = None,
                                 password_hash: str = None, display_name: str = None,
-                                role: str = None, is_active: bool = None) -> bool:
+                                role: str = None, is_active: bool = None,
+                                mfa_enabled: bool = None) -> bool:
         fields, values, idx = [], [], 1
         if email is not None:
             fields.append(f"email = ${idx}"); values.append(email); idx += 1
@@ -353,6 +354,8 @@ class Database:
             fields.append(f"role = ${idx}"); values.append(role); idx += 1
         if is_active is not None:
             fields.append(f"is_active = ${idx}"); values.append(is_active); idx += 1
+        if mfa_enabled is not None:
+            fields.append(f"mfa_enabled = ${idx}"); values.append(mfa_enabled); idx += 1
         if not fields:
             return False
         values.append(user_id)
@@ -598,7 +601,7 @@ class Database:
         """Retorna grupos que possuem pelo menos um agente vinculado ao cliente."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT DISTINCT g.id, g.name, g.color,
+                SELECT DISTINCT g.id, g.name, g.color, g.alert_enabled, g.alert_message,
                        COUNT(m.agent_id) OVER (PARTITION BY g.id) AS agent_count
                 FROM agent_groups g
                 JOIN agent_group_members m ON m.group_id = g.id
@@ -609,17 +612,19 @@ class Database:
             return [dict(r) for r in rows]
 
     async def create_group(self, name: str, description: str = '',
-                           color: str = '#3b82f6', client_id: int = None) -> dict:
+                           color: str = '#3b82f6', client_id: int = None,
+                           alert_enabled: bool = False, alert_message: str = '') -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "INSERT INTO agent_groups (name, description, color, client_id) VALUES ($1, $2, $3, $4) RETURNING *",
-                name, description, color, client_id
+                "INSERT INTO agent_groups (name, description, color, client_id, alert_enabled, alert_message) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
+                name, description, color, client_id, alert_enabled, alert_message
             )
             return dict(row) if row else {}
 
     async def update_group(self, group_id: int, name: str = None,
                            description: str = None, color: str = None,
-                           client_id: int = None) -> bool:
+                           client_id: int = None, alert_enabled: bool = None,
+                           alert_message: str = None) -> bool:
         fields, values, idx = [], [], 1
         if name is not None:
             fields.append(f"name = ${idx}"); values.append(name); idx += 1
@@ -629,6 +634,10 @@ class Database:
             fields.append(f"color = ${idx}"); values.append(color); idx += 1
         if client_id is not None:
             fields.append(f"client_id = ${idx}"); values.append(client_id); idx += 1
+        if alert_enabled is not None:
+            fields.append(f"alert_enabled = ${idx}"); values.append(alert_enabled); idx += 1
+        if alert_message is not None:
+            fields.append(f"alert_message = ${idx}"); values.append(alert_message); idx += 1
         if not fields:
             return False
         values.append(group_id)
