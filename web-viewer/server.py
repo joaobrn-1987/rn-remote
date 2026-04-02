@@ -169,6 +169,7 @@ class WebPanel:
                     permissions = {'*': True}
                 else:
                     permissions = await self.db.get_user_permissions(user['id'])
+                access = await self.db.get_user_access(user['id'])
                 _mfa_pending[mfa_session] = {
                     'user_id': user['id'],
                     'code': code,
@@ -180,6 +181,7 @@ class WebPanel:
                         'user_id': user['id'],
                         'profile_id': user.get('profile_id'),
                         'permissions': permissions,
+                        'access': access,
                     }
                 }
                 try:
@@ -195,12 +197,14 @@ class WebPanel:
                 permissions = {'*': True}
             else:
                 permissions = await self.db.get_user_permissions(user['id'])
+            access = await self.db.get_user_access(user['id'])
             return web.json_response({
                 "ok": True, "token": token,
                 "user": user['display_name'] or user['email'],
                 "role": user['role'], "user_id": user['id'],
                 "profile_id": user.get('profile_id'),
-                "permissions": permissions
+                "permissions": permissions,
+                "access": access,
             })
         return web.json_response({"ok": False, "error": "Credenciais inválidas"}, status=401)
 
@@ -378,6 +382,27 @@ class WebPanel:
             return web.json_response({}, status=401)
         perms = await self.db.get_user_permissions(user_id)
         return web.json_response(perms)
+
+    # ─── API: Acesso por Usuário ───
+
+    async def api_get_user_access(self, req):
+        if not self._require_auth(req):
+            return web.json_response({"ok": False}, status=401)
+        user_id = int(req.match_info['user_id'])
+        access = await self.db.get_user_access(user_id)
+        return web.json_response(access)
+
+    async def api_set_user_access(self, req):
+        if not self._require_auth(req):
+            return web.json_response({"ok": False}, status=401)
+        user_id = int(req.match_info['user_id'])
+        data = await req.json()
+        all_clients = bool(data.get("all_clients", True))
+        all_groups  = bool(data.get("all_groups",  True))
+        client_ids  = [int(x) for x in data.get("client_ids", [])]
+        group_ids   = [int(x) for x in data.get("group_ids",  [])]
+        await self.db.set_user_access(user_id, all_clients, client_ids, all_groups, group_ids)
+        return web.json_response({"ok": True})
 
     # ─── API: Usuários Admin ───
 
@@ -744,6 +769,8 @@ def create_app(db_dsn: str):
     app.router.add_post("/api/users", panel.api_create_user)
     app.router.add_put("/api/users/{user_id}", panel.api_update_user)
     app.router.add_delete("/api/users/{user_id}", panel.api_delete_user)
+    app.router.add_get("/api/users/{user_id}/access", panel.api_get_user_access)
+    app.router.add_put("/api/users/{user_id}/access", panel.api_set_user_access)
 
     # Grupos
     app.router.add_get("/api/groups", panel.api_get_groups)

@@ -9,7 +9,7 @@
     <title>RN Remote - Acesso Remoto</title>
     <script>
         // Força reload se a versão do app mudou desde a última visita
-        const _APP_BUILD = '20260402-5';
+        const _APP_BUILD = '20260402-6';
         if (sessionStorage.getItem('app_build') !== _APP_BUILD) {
             sessionStorage.setItem('app_build', _APP_BUILD);
             if (performance.navigation ? performance.navigation.type !== 1 : !sessionStorage.getItem('_reloaded')) {
@@ -1309,6 +1309,43 @@
         <div class="form-group" style="display:flex;align-items:center;gap:10px;padding-top:6px;border-top:1px solid var(--border)">
             <input type="checkbox" id="userModalMfa" style="width:auto;accent-color:var(--accent)">
             <label for="userModalMfa" style="margin:0;text-transform:none;font-size:13px;color:var(--text)">&#128274; Autenticação MFA por e-mail</label>
+        </div>
+        <!-- Seção de Acesso — obrigatória -->
+        <div id="userModalAccessSection" style="margin-top:14px;padding-top:14px;border-top:2px solid var(--accent)">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                <span style="font-size:13px;font-weight:700;color:var(--accent)">&#128274; Acesso a Clientes e Grupos <span style="color:var(--danger);font-size:11px">*obrigatório</span></span>
+                <span id="userAccessStatusBadge" style="font-size:11px;padding:3px 8px;border-radius:10px;background:#fef3c7;color:#92400e">Não configurado</span>
+            </div>
+            <!-- Clientes -->
+            <div style="margin-bottom:10px">
+                <div style="font-size:12px;font-weight:600;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Clientes visíveis</div>
+                <div style="display:flex;gap:8px;margin-bottom:6px">
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+                        <input type="radio" name="accessClients" value="all" id="accessClientsAll" onchange="admAccessUpdateBadge()">
+                        Todos os clientes
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+                        <input type="radio" name="accessClients" value="specific" id="accessClientsSpecific" onchange="admAccessUpdateBadge();admAccessToggleClients()">
+                        Específicos
+                    </label>
+                </div>
+                <div id="accessClientsList" style="display:none;max-height:130px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--bg-input)"></div>
+            </div>
+            <!-- Grupos -->
+            <div>
+                <div style="font-size:12px;font-weight:600;color:var(--text-dim);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Grupos visíveis</div>
+                <div style="display:flex;gap:8px;margin-bottom:6px">
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+                        <input type="radio" name="accessGroups" value="all" id="accessGroupsAll" onchange="admAccessUpdateBadge()">
+                        Todos os grupos
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:13px">
+                        <input type="radio" name="accessGroups" value="specific" id="accessGroupsSpecific" onchange="admAccessUpdateBadge();admAccessToggleGroups()">
+                        Específicos
+                    </label>
+                </div>
+                <div id="accessGroupsList" style="display:none;max-height:130px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--bg-input)"></div>
+            </div>
         </div>
         <div class="error-msg" id="userModalError"></div>
         <div class="modal-actions">
@@ -3280,6 +3317,14 @@ async function loadClientSidebar() {
         clientList = await res.json();
         if (!Array.isArray(clientList)) clientList = [];
 
+        // Filtra clientes pelo acesso do usuário logado
+        const userAccess = _getUserAccess();
+        const isMaster = (localStorage.getItem('user_permissions') || '').includes('"*"');
+        if (!isMaster && !userAccess.all_clients) {
+            const allowed = new Set(userAccess.client_ids.map(String));
+            clientList = clientList.filter(c => allowed.has(String(c.id)));
+        }
+
         // Carrega agentes e grupos por cliente em paralelo
         clientAgentMap = {};
         agentClientAlertMap = {};
@@ -3317,6 +3362,14 @@ async function loadClientSidebar() {
                 }));
             } catch(e) { clientAgentMap[c.id] = new Set(); }
         }));
+
+        // Filtra grupos pelo acesso do usuário (dentro dos clientes já filtrados)
+        if (!isMaster && !userAccess.all_groups) {
+            const allowedG = new Set(userAccess.group_ids.map(String));
+            clientList.forEach(c => {
+                if (c._groups) c._groups = c._groups.filter(g => allowedG.has(String(g.id)));
+            });
+        }
 
         // Injeta itens na sidebar
         const container = document.getElementById('clientFilterItems');
@@ -3396,6 +3449,93 @@ function showSection(section) {
 
 // ─── Usuários ───
 
+// ── Acesso por Usuário ──────────────────────────────────
+let _accessData = null; // dados carregados do backend para edição
+
+function admAccessUpdateBadge() {
+    const clientsOk = document.querySelector('input[name="accessClients"]:checked');
+    const groupsOk  = document.querySelector('input[name="accessGroups"]:checked');
+    const badge = document.getElementById('userAccessStatusBadge');
+    if (!badge) return;
+    if (clientsOk && groupsOk) {
+        badge.textContent = 'Configurado ✓';
+        badge.style.background = '#d1fae5'; badge.style.color = '#065f46';
+    } else {
+        badge.textContent = 'Não configurado';
+        badge.style.background = '#fef3c7'; badge.style.color = '#92400e';
+    }
+}
+
+function admAccessToggleClients() {
+    const specific = document.getElementById('accessClientsSpecific').checked;
+    document.getElementById('accessClientsList').style.display = specific ? 'block' : 'none';
+}
+
+function admAccessToggleGroups() {
+    const specific = document.getElementById('accessGroupsSpecific').checked;
+    document.getElementById('accessGroupsList').style.display = specific ? 'block' : 'none';
+}
+
+async function admLoadAccessSection(userId, existingAccess) {
+    const token = admGetToken();
+    // Carrega clientes e grupos disponíveis
+    const [cRes, gRes] = await Promise.all([
+        fetch('/api/clients', {headers:{'Authorization':'Bearer '+token}}),
+        fetch('/api/groups',  {headers:{'Authorization':'Bearer '+token}})
+    ]);
+    const clients = await cRes.json();
+    const groups  = await gRes.json();
+
+    // Preenche lista de clientes
+    const clList = document.getElementById('accessClientsList');
+    clList.innerHTML = (Array.isArray(clients) ? clients : []).map(c =>
+        `<label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer;font-size:13px">
+            <input type="checkbox" class="acc-client-cb" value="${c.id}" style="accent-color:var(--accent)" onchange="admAccessUpdateBadge()">
+            ${escapeHtml(c.name)}
+        </label>`
+    ).join('') || '<span style="font-size:12px;color:var(--text-dim)">Nenhum cliente cadastrado</span>';
+
+    // Preenche lista de grupos
+    const grList = document.getElementById('accessGroupsList');
+    grList.innerHTML = (Array.isArray(groups) ? groups : []).map(g =>
+        `<label style="display:flex;align-items:center;gap:6px;padding:4px 0;cursor:pointer;font-size:13px">
+            <input type="checkbox" class="acc-group-cb" value="${g.id}" style="accent-color:var(--accent)" onchange="admAccessUpdateBadge()">
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${g.color||'var(--accent)'};flex-shrink:0"></span>
+            ${escapeHtml(g.name)}
+        </label>`
+    ).join('') || '<span style="font-size:12px;color:var(--text-dim)">Nenhum grupo cadastrado</span>';
+
+    // Aplica valores existentes
+    const acc = existingAccess || {all_clients:true,client_ids:[],all_groups:true,group_ids:[]};
+    if (acc.all_clients) {
+        document.getElementById('accessClientsAll').checked = true;
+        document.getElementById('accessClientsList').style.display = 'none';
+    } else {
+        document.getElementById('accessClientsSpecific').checked = true;
+        document.getElementById('accessClientsList').style.display = 'block';
+        const allowed = new Set(acc.client_ids.map(String));
+        document.querySelectorAll('.acc-client-cb').forEach(cb => { cb.checked = allowed.has(cb.value); });
+    }
+    if (acc.all_groups) {
+        document.getElementById('accessGroupsAll').checked = true;
+        document.getElementById('accessGroupsList').style.display = 'none';
+    } else {
+        document.getElementById('accessGroupsSpecific').checked = true;
+        document.getElementById('accessGroupsList').style.display = 'block';
+        const allowed = new Set(acc.group_ids.map(String));
+        document.querySelectorAll('.acc-group-cb').forEach(cb => { cb.checked = allowed.has(cb.value); });
+    }
+    admAccessUpdateBadge();
+}
+
+function admGetAccessPayload() {
+    const allClients = document.getElementById('accessClientsAll').checked;
+    const allGroups  = document.getElementById('accessGroupsAll').checked;
+    const clientIds  = allClients ? [] : Array.from(document.querySelectorAll('.acc-client-cb:checked')).map(c => parseInt(c.value));
+    const groupIds   = allGroups  ? [] : Array.from(document.querySelectorAll('.acc-group-cb:checked')).map(c => parseInt(c.value));
+    return { all_clients: allClients, client_ids: clientIds, all_groups: allGroups, group_ids: groupIds };
+}
+
 function openUserModal(user) {
     const isEdit  = !!user;
     const isMaster = isEdit && user.email === 'app@rochaneto.com';
@@ -3410,10 +3550,29 @@ function openUserModal(user) {
     document.getElementById('userModalMfa').checked = isEdit ? !!user.mfa_enabled : false;
     document.getElementById('userModalError').style.display = 'none';
     document.getElementById('userModalPassHint').style.display = isEdit ? 'inline' : 'none';
-    // Master: oculta seletor de perfil; outros: carrega perfis
+    // Master: oculta seletor de perfil e seção de acesso; outros: carrega perfis e acesso
     const profileWrap = document.getElementById('userModalProfileWrap');
+    const accessSection = document.getElementById('userModalAccessSection');
     if (profileWrap) profileWrap.style.display = isMaster ? 'none' : '';
-    if (!isMaster) admLoadProfilesForSelect('userModalProfile', isEdit ? user.profile_id : null);
+    if (accessSection) accessSection.style.display = isMaster ? 'none' : '';
+    if (!isMaster) {
+        admLoadProfilesForSelect('userModalProfile', isEdit ? user.profile_id : null);
+        // Para novo usuário: reseta seleções; para edição: carrega access existente
+        if (isEdit && user.id) {
+            const token = localStorage.getItem('auth_token');
+            fetch(`/api/users/${user.id}/access`, {headers:{'Authorization':'Bearer '+token}})
+                .then(r => r.json())
+                .then(acc => admLoadAccessSection(user.id, acc))
+                .catch(() => admLoadAccessSection(null, null));
+        } else {
+            // novo usuário: sem seleção pré-definida (forçar escolha)
+            admLoadAccessSection(null, null).then(() => {
+                document.getElementById('accessClientsAll').checked = false;
+                document.getElementById('accessGroupsAll').checked  = false;
+                admAccessUpdateBadge();
+            });
+        }
+    }
     document.getElementById('userModal').classList.remove('hidden');
     setTimeout(() => document.getElementById('userModalEmail').focus(), 50);
 }
@@ -3441,6 +3600,21 @@ async function saveUserModal() {
     if (pass && pass !== passConfirm) { errEl.textContent = 'As senhas não coincidem'; errEl.style.display = 'block'; return; }
 
     const profileWrap = document.getElementById('userModalProfileWrap');
+    const accessSection = document.getElementById('userModalAccessSection');
+    const isMasterModal = accessSection && accessSection.style.display === 'none';
+
+    // Valida seção de acesso (obrigatória para não-master)
+    if (!isMasterModal) {
+        const clientOk = document.querySelector('input[name="accessClients"]:checked');
+        const groupOk  = document.querySelector('input[name="accessGroups"]:checked');
+        if (!clientOk || !groupOk) {
+            errEl.textContent = 'Configure o acesso a clientes e grupos antes de salvar.';
+            errEl.style.display = 'block';
+            document.getElementById('userModalAccessSection').scrollIntoView({behavior:'smooth', block:'center'});
+            return;
+        }
+    }
+
     const profileId = (profileWrap && profileWrap.style.display === 'none') ? undefined : document.getElementById('userModalProfile').value;
     const mfaEnabled = document.getElementById('userModalMfa').checked;
     const body = { email, display_name: name, role, is_active: active, mfa_enabled: mfaEnabled };
@@ -3457,6 +3631,18 @@ async function saveUserModal() {
         });
         const data = await res.json();
         if (data.ok || res.ok) {
+            // Salva acesso (pega o ID do usuário criado ou existente)
+            if (!isMasterModal) {
+                const uid = id || (data.user && data.user.id);
+                if (uid) {
+                    const accessPayload = admGetAccessPayload();
+                    await fetch(`/api/users/${uid}/access`, {
+                        method: 'PUT',
+                        headers: {'Content-Type':'application/json','Authorization':'Bearer '+token},
+                        body: JSON.stringify(accessPayload)
+                    });
+                }
+            }
             closeUserModal();
         } else {
             errEl.textContent = data.error || 'Erro ao salvar';
@@ -3600,8 +3786,14 @@ function _applyLoginData(data) {
     localStorage.setItem('auth_token', data.token);
     localStorage.setItem('auth_user',  data.user);
     if (data.permissions) localStorage.setItem('user_permissions', JSON.stringify(data.permissions));
+    if (data.access)      localStorage.setItem('user_access', JSON.stringify(data.access));
     showAuthenticatedUI(data.user);
     admApplyPermissions(data.permissions);
+}
+
+function _getUserAccess() {
+    try { return JSON.parse(localStorage.getItem('user_access')) || {all_clients:true,client_ids:[],all_groups:true,group_ids:[]}; }
+    catch(e) { return {all_clients:true,client_ids:[],all_groups:true,group_ids:[]}; }
 }
 
 function showAuthenticatedUI(userName) {
@@ -3643,6 +3835,7 @@ function adminLogout() {
     localStorage.removeItem('auth_token');
     localStorage.removeItem('auth_user');
     localStorage.removeItem('user_permissions');
+    localStorage.removeItem('user_access');
     cachedNicknames = {};
     if (ws) { ws.close(); ws = null; }
     document.getElementById('authOverlay').classList.remove('hidden');

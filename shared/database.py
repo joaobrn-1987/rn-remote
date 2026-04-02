@@ -37,6 +37,7 @@ class Database:
         await self.ensure_group_tables()
         await self.ensure_client_tables()
         await self.ensure_profile_tables()
+        await self.ensure_access_tables()
 
     async def close(self):
         if self.pool:
@@ -380,6 +381,53 @@ class Database:
             )
             return result == "DELETE 1"
 
+    # ─── Controle de Acesso por Usuário ───
+
+    async def get_user_access(self, user_id: int) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT access_all_clients, access_all_groups FROM admin_users WHERE id = $1",
+                user_id
+            )
+            if not row:
+                return {"all_clients": True, "client_ids": [], "all_groups": True, "group_ids": []}
+            client_ids = []
+            group_ids  = []
+            if not row['access_all_clients']:
+                r = await conn.fetch("SELECT client_id FROM user_client_access WHERE user_id = $1", user_id)
+                client_ids = [x['client_id'] for x in r]
+            if not row['access_all_groups']:
+                r = await conn.fetch("SELECT group_id FROM user_group_access WHERE user_id = $1", user_id)
+                group_ids = [x['group_id'] for x in r]
+            return {
+                "all_clients": bool(row['access_all_clients']),
+                "client_ids":  client_ids,
+                "all_groups":  bool(row['access_all_groups']),
+                "group_ids":   group_ids,
+            }
+
+    async def set_user_access(self, user_id: int, all_clients: bool,
+                              client_ids: List[int], all_groups: bool,
+                              group_ids: List[int]):
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE admin_users SET access_all_clients=$1, access_all_groups=$2 WHERE id=$3",
+                    all_clients, all_groups, user_id
+                )
+                await conn.execute("DELETE FROM user_client_access WHERE user_id=$1", user_id)
+                await conn.execute("DELETE FROM user_group_access  WHERE user_id=$1", user_id)
+                if not all_clients and client_ids:
+                    await conn.executemany(
+                        "INSERT INTO user_client_access (user_id, client_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+                        [(user_id, cid) for cid in client_ids]
+                    )
+                if not all_groups and group_ids:
+                    await conn.executemany(
+                        "INSERT INTO user_group_access (user_id, group_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+                        [(user_id, gid) for gid in group_ids]
+                    )
+
     # ─── Perfis (Profiles) ───
 
     ALL_MODULES = [
@@ -530,7 +578,7 @@ class Database:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
                 SELECT u.id, u.email, u.display_name, u.role, u.is_active,
-                       u.last_login, u.created_at, u.profile_id,
+                       u.mfa_enabled, u.last_login, u.created_at, u.profile_id,
                        p.name AS profile_name
                 FROM admin_users u
                 LEFT JOIN profiles p ON p.id = u.profile_id
@@ -680,6 +728,26 @@ class Database:
                 "DELETE FROM agent_group_members WHERE group_id = $1 AND agent_id = $2",
                 group_id, agent_id
             )
+
+    async def ensure_access_tables(self):
+        """Garante colunas e tabelas de controle de acesso por usuário."""
+        async with self.pool.acquire() as conn:
+            await conn.execute("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS access_all_clients BOOLEAN NOT NULL DEFAULT TRUE")
+            await conn.execute("ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS access_all_groups  BOOLEAN NOT NULL DEFAULT TRUE")
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_client_access (
+                    user_id   INT REFERENCES admin_users(id) ON DELETE CASCADE,
+                    client_id INT REFERENCES clients(id)     ON DELETE CASCADE,
+                    PRIMARY KEY (user_id, client_id)
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_group_access (
+                    user_id  INT REFERENCES admin_users(id)    ON DELETE CASCADE,
+                    group_id INT REFERENCES agent_groups(id)   ON DELETE CASCADE,
+                    PRIMARY KEY (user_id, group_id)
+                )
+            """)
 
     # ─── Clientes ───
 
