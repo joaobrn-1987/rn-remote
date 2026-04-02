@@ -399,6 +399,12 @@ class Database:
             )
             return dict(row) if row else None
 
+    async def count_active_superadmins(self) -> int:
+        async with self.pool.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*) FROM admin_users WHERE role='superadmin' AND is_active=true"
+            )
+
     async def delete_admin_user(self, user_id: int) -> bool:
         async with self.pool.acquire() as conn:
             result = await conn.execute(

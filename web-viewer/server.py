@@ -532,10 +532,14 @@ class WebPanel:
             return web.json_response({"ok": False, "error": f"Erro ao criar usuário: {err_str}"}, status=400)
 
     async def api_update_user(self, req):
-        if not self._require_admin(req):
+        token_data = self._require_admin(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
         user_id = int(req.match_info['user_id'])
         data = await req.json()
+        # Impede que admin rebaixe o próprio role
+        if token_data["user_id"] == user_id and "role" in data:
+            return web.json_response({"ok": False, "error": "Não é possível alterar o próprio role"}, status=400)
         kwargs = {}
         if "email" in data:
             kwargs["email"] = data["email"]
@@ -563,18 +567,22 @@ class WebPanel:
         # Impede deleção do próprio usuário
         if token_data["user_id"] == user_id:
             return web.json_response({"ok": False, "error": "Não é possível excluir o próprio usuário"}, status=400)
-        # Protege o usuário master
+        # Protege o último superadmin ativo
         user = await self.db.get_admin_user_by_id(user_id)
-        if user and user.get('email') == 'app@rochaneto.com':
-            return web.json_response({"ok": False, "error": "O usuário master não pode ser removido"}, status=403)
+        if user and user.get('role') == 'superadmin':
+            if await self.db.count_active_superadmins() <= 1:
+                return web.json_response({"ok": False, "error": "Não é possível remover o único superadmin ativo"}, status=403)
         await self.db.delete_admin_user(user_id)
         return web.json_response({"ok": True})
 
     # ─── API: Dashboard ───
 
     async def api_stats(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "dashboard", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         stats = await self.db.get_stats()
         return web.json_response(stats)
 
@@ -759,8 +767,11 @@ class WebPanel:
         return web.json_response(groups)
 
     async def api_get_group_agents(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "machines", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         group_id = int(req.match_info['group_id'])
         agents = await self.db.get_group_agents(group_id)
         return web.json_response(agents)
@@ -855,8 +866,11 @@ class WebPanel:
         return web.json_response({"ok": True})
 
     async def api_get_client_agents(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "machines", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         client_id = int(req.match_info['client_id'])
         agents = await self.db.get_client_agents(client_id)
         return web.json_response(agents)
