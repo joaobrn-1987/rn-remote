@@ -34,7 +34,7 @@ import urllib.request
 import urllib.parse
 import http.cookiejar
 
-AGENT_VERSION = "1.2.9"
+AGENT_VERSION = "1.2.10"
 
 import websockets
 
@@ -407,8 +407,12 @@ class PfSenseAgent:
                     )
             except (websockets.ConnectionClosed, ConnectionRefusedError, OSError) as e:
                 logger.warning(f"Conexão perdida: {e}")
+            except asyncio.CancelledError:
+                raise  # Encerramento intencional — não tenta reconectar
             except Exception:
                 logger.exception("Erro inesperado no loop principal")
+            except BaseException:
+                logger.exception("BaseException inesperada no loop principal — reconectando")
             finally:
                 self.ws = None
                 self._stop_shell()
@@ -1099,9 +1103,10 @@ html,body{{margin:0;padding:0;background:#1e3f75;color:white;font-family:sans-se
                         "timestamp": time.time(),
                     })
         except asyncio.CancelledError:
+            logger.info("Shell reader cancelado")
             return
-        except Exception as e:
-            logger.warning(f"Erro na leitura do shell: {e}")
+        except Exception:
+            logger.exception("Erro na leitura do shell")
         finally:
             logger.info("Leitura do shell finalizada — limpando")
             # NÃO chamar self._stop_shell() aqui: ele cancela self._shell_reader_task
@@ -1179,8 +1184,8 @@ Arquivo de configuração (JSON):
                         help="Senha de acesso ao agente")
     parser.add_argument("--config",   default="/usr/local/etc/rnremote/agent.json",
                         help="Arquivo de configuração JSON")
-    parser.add_argument("--reconnect-delay", type=int, default=10,
-                        help="Segundos entre tentativas de reconexão (padrão: 10)")
+    parser.add_argument("--reconnect-delay", type=int, default=5,
+                        help="Segundos entre tentativas de reconexão (padrão: 5)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
