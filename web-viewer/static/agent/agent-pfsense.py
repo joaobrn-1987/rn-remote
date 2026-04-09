@@ -34,7 +34,7 @@ import urllib.request
 import urllib.parse
 import http.cookiejar
 
-AGENT_VERSION = "1.2.8"
+AGENT_VERSION = "1.2.9"
 
 import websockets
 
@@ -407,8 +407,8 @@ class PfSenseAgent:
                     )
             except (websockets.ConnectionClosed, ConnectionRefusedError, OSError) as e:
                 logger.warning(f"Conexão perdida: {e}")
-            except Exception as e:
-                logger.error(f"Erro: {e}")
+            except Exception:
+                logger.exception("Erro inesperado no loop principal")
             finally:
                 self.ws = None
                 self._stop_shell()
@@ -449,7 +449,10 @@ class PfSenseAgent:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            await self._handle(msg)
+            try:
+                await self._handle(msg)
+            except Exception:
+                logger.exception("Erro não tratado em _handle — mantendo conexão")
 
     async def _handle(self, msg: dict):
         t    = msg.get("type", "")
@@ -627,6 +630,14 @@ class PfSenseAgent:
     var method = (form.method || 'GET').toUpperCase();
     var data = {{}};
     new FormData(form).forEach(function(v,k){{ data[k]=v; }});
+    // Inclui o botão de submit que disparou o evento (ex: login=Sign In no pfSense)
+    var sub = e.submitter;
+    if(sub && sub.name){{ data[sub.name] = sub.value || ''; }}
+    else {{
+      // Fallback: inclui o primeiro submit com name
+      var btn = form.querySelector('input[type=submit][name],button[type=submit][name]');
+      if(btn && !(btn.name in data)){{ data[btn.name] = btn.value || ''; }}
+    }}
     rnSend({{type:'nav', url:action, method:method, body:data}});
   }}, true);
 }})();
@@ -1190,6 +1201,10 @@ Arquivo de configuração (JSON):
         binding_secret=binding_secret,
         reconnect_delay=args.reconnect_delay,
     )
+
+    # SIGHUP: ignorar — no FreeBSD pode ser enviado quando sessão PTY encerra;
+    # sem este handler, o sinal terminaria o processo (comportamento padrão).
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
     try:
         asyncio.run(agent.run())
