@@ -211,7 +211,7 @@
         .machines-grid.list-view .mc-update-bar { display:none; }
         .machines-grid.list-view .mc-footer-card { display:none !important; }
         .machines-grid.list-view .mc-footer-list { display:flex !important; }
-        .machines-grid.list-view .mc-footer { flex-shrink:0; padding-left:16px; border-left:1px solid var(--border); margin-left:0; justify-content:flex-start; }
+        .machines-grid.list-view .mc-footer { flex:0 0 220px; padding-left:16px; border-left:1px solid var(--border); margin-left:0; justify-content:flex-start; overflow:hidden; }
         /* Indicador de status à esquerda do card */
         .machines-grid.list-view .machine-card { border-left-width:3px; }
         .machines-grid.list-view .machine-card:not(.offline) { border-left-color:var(--success); }
@@ -1292,7 +1292,7 @@
 <!-- ── Agentes Registrados ───────────────────────── -->
 <div class="admin-section" id="adm-agents">
     <h2>&#128203; Agentes Registrados</h2>
-    <table class="adm-table"><thead><tr><th>ID</th><th>Hostname</th><th>SO</th><th>Usuário</th><th>IP</th><th>Status</th><th>Último Acesso</th><th></th></tr></thead>
+    <table class="adm-table"><thead><tr><th>ID</th><th>Hostname</th><th>SO</th><th>Usuário</th><th>Status</th><th>Último Acesso</th><th></th></tr></thead>
     <tbody id="admAgentsBody"></tbody></table>
 </div>
 
@@ -3287,10 +3287,6 @@ function renderCards(agents) {
                 <div class="mc-detail">
                     <span class="mc-detail-label">Usuário</span>
                     <span class="mc-detail-value">${escapeHtml(a.username||'—')}</span>
-                </div>
-                <div class="mc-detail">
-                    <span class="mc-detail-label">IP</span>
-                    <span class="mc-detail-value">${escapeHtml(a.ip_address||'—')}</span>
                 </div>
                 <div class="mc-detail">
                     <span class="mc-detail-label">Agente</span>
@@ -7985,11 +7981,11 @@ async function admLoadAgents() {
     document.getElementById('admAgentsBody').innerHTML = list.map(x=>`<tr>
         <td><strong>${x.agent_id}</strong></td><td>${x.hostname}</td>
         <td>${admOsIcon(x.os_type)}${escapeHtml(fmtOsDisplay(x.os_type, x.os_version))}</td>
-        <td>${x.username}</td><td>${x.ip_address}</td>
+        <td>${x.username}</td>
         <td><span class="adm-badge ${x.is_online?'adm-badge-online':'adm-badge-offline'}">${x.is_online?'Online':'Offline'}</span></td>
         <td>${admFmtDate(x.last_seen)}</td>
         <td><button class="btn btn-sm btn-danger" onclick="admDeleteAgent('${x.agent_id}')">&#10006;</button></td>
-    </tr>`).join('') || '<tr><td colspan="8" style="color:var(--text-dim);padding:12px">Nenhum agente</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="7" style="color:var(--text-dim);padding:12px">Nenhum agente</td></tr>';
 }
 
 async function admDeleteAgent(id) {
