@@ -211,7 +211,7 @@
         .machines-grid.list-view .mc-update-bar { display:none; }
         .machines-grid.list-view .mc-footer-card { display:none !important; }
         .machines-grid.list-view .mc-footer-list { display:flex !important; }
-        .machines-grid.list-view .mc-footer { flex:0 0 220px; padding-left:16px; border-left:1px solid var(--border); margin-left:0; justify-content:flex-start; overflow:hidden; }
+        .machines-grid.list-view .mc-footer { flex-shrink:0; padding-left:16px; border-left:1px solid var(--border); margin-left:0; justify-content:flex-start; }
         /* Indicador de status à esquerda do card */
         .machines-grid.list-view .machine-card { border-left-width:3px; }
         .machines-grid.list-view .machine-card:not(.offline) { border-left-color:var(--success); }
@@ -3263,9 +3263,9 @@ function renderCards(agents) {
         const footer = online
             ? `${btnEdit}<button class="btn-connect" onclick="openConnectPrompt('${a.agent_id}','${name}')">&#9654; Conectar</button>`
             : `${btnEdit}<span style="font-size:12px;color:var(--text-dim)">Indisponível</span>`;
-        // No modo lista o mc-update-bar fica oculto via CSS — inclui o botão no footer
+        // No modo lista mostra só editar + conectar — atualização via card view
         const footerList = online
-            ? `${btnUpdate}${btnEdit}<button class="btn-connect" onclick="openConnectPrompt('${a.agent_id}','${name}')">&#9654; Conectar</button>`
+            ? `${btnEdit}<button class="btn-connect" onclick="openConnectPrompt('${a.agent_id}','${name}')">&#9654; Conectar</button>`
             : `${btnEdit}<span style="font-size:12px;color:var(--text-dim)">Indisponível</span>`;
 
         html += `

@@ -34,7 +34,7 @@ import urllib.request
 import urllib.parse
 import http.cookiejar
 
-AGENT_VERSION = "1.2.10"
+AGENT_VERSION = "1.2.11"
 
 import websockets
 
@@ -753,7 +753,7 @@ html,body{{margin:0;padding:0;background:#1e3f75;color:white;font-family:sans-se
                     except Exception:
                         return href
 
-                def _fetch_text(asset_url, timeout=10):
+                def _fetch_text(asset_url, timeout=20):
                     try:
                         r = self._browser_opener.open(
                             urllib.request.Request(asset_url, headers={"User-Agent": "Mozilla/5.0 (RNRemote Proxy)"}),
@@ -765,7 +765,8 @@ html,body{{margin:0;padding:0;background:#1e3f75;color:white;font-family:sans-se
                         if "charset=" in ct:
                             enc = ct.split("charset=")[-1].split(";")[0].strip()
                         return raw.decode(enc, errors="replace")
-                    except Exception:
+                    except Exception as _e:
+                        logger.warning(f"Browser: falha ao buscar {asset_url}: {_e}")
                         return None
 
                 def _fetch_b64(asset_url, timeout=10):
@@ -787,16 +788,32 @@ html,body{{margin:0;padding:0;background:#1e3f75;color:white;font-family:sans-se
                     css_url = _abs(href)
                     css = _fetch_text(css_url)
                     if css is None:
-                        return m.group(0)
-                    # Substitui url() dentro do CSS com data URIs para imagens pequenas
+                        # Mantém o link mas com URL absoluta (relativas não resolvem no srcdoc)
+                        return m.group(0).replace(href, css_url)
+                    # Substitui url() dentro do CSS com data URIs
                     def _css_url(cm):
-                        asset = cm.group(1).strip("'\"")
-                        if asset.startswith("data:") or asset.startswith("#"):
+                        asset = cm.group(1).strip("'\" \t")
+                        if asset.startswith("data:") or asset.startswith("#") or not asset:
                             return cm.group(0)
                         abs_asset = urllib.parse.urljoin(css_url, asset)
                         data = _fetch_b64(abs_asset)
-                        return f"url('{data}')" if data else cm.group(0)
-                    css = _re.sub(r"url\(([^)]+)\)", _css_url, css)
+                        if data:
+                            return f"url('{data}')"
+                        # Fallback: URL absoluta dentro do CSS
+                        return f"url('{abs_asset}')"
+                    css = _re.sub(r"url\(\s*([^)]+?)\s*\)", _css_url, css)
+                    # Segue @import dentro do CSS
+                    def _follow_import(im):
+                        raw_url = im.group(1).strip("'\" ")
+                        if raw_url.startswith("http"):
+                            imp_url = raw_url
+                        else:
+                            imp_url = urllib.parse.urljoin(css_url, raw_url)
+                        imp_css = _fetch_text(imp_url)
+                        if imp_css is None:
+                            return f"/* @import {imp_url} failed */"
+                        return imp_css
+                    css = _re.sub(r'@import\s+["\']([^"\']+)["\']', _follow_import, css)
                     return f"<style>/* {css_url} */\n{css}\n</style>"
 
                 html = _re.sub(
@@ -813,11 +830,12 @@ html,body{{margin:0;padding:0;background:#1e3f75;color:white;font-family:sans-se
                     js_url = _abs(src)
                     js = _fetch_text(js_url)
                     if js is None:
-                        return m.group(0)
+                        # Usa URL absoluta — relativa não resolve em srcdoc
+                        return m.group(0).replace(src, js_url)
                     return f"<script>/* {js_url} */\n{js}\n</script>"
 
                 html = _re.sub(
-                    r'<script[^>]+src=["\']([^"\']+)["\'][^>]*></script>',
+                    r'<script[^>]+src=["\']([^"\']+)["\'][^>]*>\s*</script>',
                     _inline_js, html, flags=_re.IGNORECASE,
                 )
 
@@ -837,8 +855,15 @@ html,body{{margin:0;padding:0;background:#1e3f75;color:white;font-family:sans-se
                 title_m = _re.search(r'<title[^>]*>([^<]+)</title>', html, _re.IGNORECASE)
                 title = title_m.group(1).strip() if title_m else ""
 
-                # Remove tag <base> existente e injeta interceptor com URL base explícita
+                # Remove tag <base> existente e injeta a correta
                 html = _re.sub(r'<base[^>]*/?>', '', html, flags=_re.IGNORECASE)
+                # Adiciona <base href> no <head> — garante que URLs não inlinadas
+                # (fontes, recursos que falharam) resolvam relativamente ao pfSense
+                parsed_base = urllib.parse.urlparse(final_url)
+                base_origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+                base_tag = f'<base href="{base_origin}/">'
+                if '<head>' in html.lower():
+                    html = _re.sub(r'(<head[^>]*>)', r'\1' + base_tag, html, count=1, flags=_re.IGNORECASE)
                 inject = PfSenseAgent._make_inject_js(final_url)
                 if "</body>" in html.lower():
                     html = _re.sub(r'</body>', inject + '</body>', html, count=1, flags=_re.IGNORECASE)
@@ -1207,9 +1232,12 @@ Arquivo de configuração (JSON):
         reconnect_delay=args.reconnect_delay,
     )
 
-    # SIGHUP: ignorar — no FreeBSD pode ser enviado quando sessão PTY encerra;
-    # sem este handler, o sinal terminaria o processo (comportamento padrão).
+    # SIGHUP: ignorar — no FreeBSD pode ser enviado quando sessão PTY encerra.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    # SIGPIPE: ignorar — sem este handler, os.write() num fd fechado (PTY slave
+    # encerrado) gera SIGPIPE que mata o processo silenciosamente no FreeBSD.
+    # Com SIG_IGN, os.write() levanta BrokenPipeError (OSError) em vez disso.
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
     try:
         asyncio.run(agent.run())
