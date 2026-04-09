@@ -16,6 +16,9 @@ import asyncpg
 
 logger = logging.getLogger("rnremote.db")
 
+# E-mail da conta master — usado apenas no bootstrap para identificar e marcar is_master=TRUE
+MASTER_EMAIL = "app@rochaneto.com"
+
 
 class Database:
     """Gerencia conexão com PostgreSQL."""
@@ -39,8 +42,8 @@ class Database:
         await self.ensure_agent_columns()
         await self.ensure_group_tables()
         await self.ensure_client_tables()
-        await self.ensure_profile_tables()
         await self.ensure_access_tables()
+        await self.ensure_profile_tables()
 
     async def close(self):
         if self.pool:
@@ -137,6 +140,14 @@ class Database:
             )
             return dict(row) if row else {}
 
+    async def update_agent_password_hash(self, agent_id: str, password_hash: str):
+        """Atualiza o hash de senha do agente (usado para upgrade SHA-256 → bcrypt)."""
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE agents SET password_hash = $1 WHERE agent_id = $2",
+                password_hash, agent_id
+            )
+
     async def set_agent_offline(self, agent_id: str):
         """Marca agente como offline."""
         async with self.pool.acquire() as conn:
@@ -198,9 +209,10 @@ class Database:
 
     async def delete_agent(self, agent_id: str):
         async with self.pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM agents WHERE agent_id = $1", agent_id
-            )
+            async with conn.transaction():
+                # Remove sessions first — FK sessions.agent_id → agents.agent_id (NOT NULL, no CASCADE)
+                await conn.execute("DELETE FROM sessions WHERE agent_id = $1", agent_id)
+                await conn.execute("DELETE FROM agents WHERE agent_id = $1", agent_id)
 
     # ─── Sessões ───
 
@@ -347,27 +359,27 @@ class Database:
     async def get_all_admin_users(self) -> List[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT id, email, display_name, role, is_active, mfa_enabled, last_login, created_at
+                """SELECT id, email, display_name, is_active, mfa_enabled, last_login, created_at
                    FROM admin_users ORDER BY created_at"""
             )
             return [dict(r) for r in rows]
 
     async def create_admin_user(self, email: str, password_hash: str,
-                                display_name: str = "", role: str = "admin") -> dict:
+                                display_name: str = "") -> dict:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO admin_users (email, username, password_hash, display_name, role)
-                VALUES ($1, $1, $2, $3, $4)
-                RETURNING id, email, display_name, role, is_active, created_at
+                INSERT INTO admin_users (email, username, password_hash, display_name)
+                VALUES ($1, $1, $2, $3)
+                RETURNING id, email, display_name, is_active, created_at
                 """,
-                email, password_hash, display_name, role
+                email, password_hash, display_name
             )
             return dict(row) if row else {}
 
     async def update_admin_user(self, user_id: int, email: str = None,
                                 password_hash: str = None, display_name: str = None,
-                                role: str = None, is_active: bool = None,
+                                is_active: bool = None,
                                 mfa_enabled: bool = None) -> bool:
         fields, values, idx = [], [], 1
         if email is not None:
@@ -376,8 +388,6 @@ class Database:
             fields.append(f"password_hash = ${idx}"); values.append(password_hash); idx += 1
         if display_name is not None:
             fields.append(f"display_name = ${idx}"); values.append(display_name); idx += 1
-        if role is not None:
-            fields.append(f"role = ${idx}"); values.append(role); idx += 1
         if is_active is not None:
             fields.append(f"is_active = ${idx}"); values.append(is_active); idx += 1
         if mfa_enabled is not None:
@@ -395,15 +405,17 @@ class Database:
     async def get_admin_user_by_id(self, user_id: int) -> Optional[dict]:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, email, role FROM admin_users WHERE id = $1", user_id
+                "SELECT id, email, is_master FROM admin_users WHERE id = $1", user_id
             )
             return dict(row) if row else None
 
-    async def count_active_superadmins(self) -> int:
+    async def get_master_user_id(self) -> Optional[int]:
+        """Retorna o id do usuário com is_master=TRUE, ou None se não existir."""
         async with self.pool.acquire() as conn:
-            return await conn.fetchval(
-                "SELECT COUNT(*) FROM admin_users WHERE role='superadmin' AND is_active=true"
+            row = await conn.fetchrow(
+                "SELECT id FROM admin_users WHERE is_master = TRUE LIMIT 1"
             )
+            return row['id'] if row else None
 
     async def delete_admin_user(self, user_id: int) -> bool:
         async with self.pool.acquire() as conn:
@@ -494,11 +506,11 @@ class Database:
                 """, admin_id, mod)
             logger.info("Perfil 'Admin' criado com todas as permissões")
 
-        # Vincula o usuário master ao perfil Admin se não tiver perfil
+        # Vincula e marca o usuário master (bootstrap inicial)
         await conn.execute("""
-            UPDATE admin_users SET profile_id = $1, role = 'superadmin'
-            WHERE email = 'app@rochaneto.com' AND profile_id IS NULL
-        """, admin_id)
+            UPDATE admin_users SET profile_id = $1, is_master = TRUE
+            WHERE email = $2 AND profile_id IS NULL
+        """, admin_id, MASTER_EMAIL)
 
     async def get_all_profiles(self) -> List[dict]:
         async with self.pool.acquire() as conn:
@@ -577,14 +589,9 @@ class Database:
         """Retorna dict {module: {can_view, can_create, can_edit, can_delete}} do perfil do usuário."""
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT profile_id, role FROM admin_users WHERE id = $1", user_id
+                "SELECT profile_id FROM admin_users WHERE id = $1", user_id
             )
-            if not row:
-                return {}
-            # superadmin tem tudo
-            if row['role'] == 'superadmin':
-                return {'*': True}
-            if not row['profile_id']:
+            if not row or not row['profile_id']:
                 return {}
             rows = await conn.fetch(
                 "SELECT * FROM profile_permissions WHERE profile_id = $1",
@@ -608,7 +615,7 @@ class Database:
     async def get_all_admin_users_with_profile(self) -> List[dict]:
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT u.id, u.email, u.display_name, u.role, u.is_active,
+                SELECT u.id, u.email, u.display_name, u.is_active,
                        u.mfa_enabled, u.last_login, u.created_at, u.profile_id,
                        p.name AS profile_name
                 FROM admin_users u
@@ -765,6 +772,7 @@ class Database:
         async with self.pool.acquire() as conn:
             # ALTER TABLE pode falhar se o usuário DB não for owner (colunas já existem após migração manual)
             for ddl in [
+                "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS is_master BOOLEAN NOT NULL DEFAULT FALSE",
                 "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS access_all_clients BOOLEAN NOT NULL DEFAULT TRUE",
                 "ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS access_all_groups  BOOLEAN NOT NULL DEFAULT TRUE",
             ]:

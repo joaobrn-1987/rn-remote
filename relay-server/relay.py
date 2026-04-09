@@ -20,7 +20,7 @@ from websockets.server import serve
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from shared.protocol import (
     MessageType, Message, parse_message, create_message,
-    generate_session_id, hash_password,
+    generate_session_id, hash_password, hash_password_bcrypt, verify_password,
     HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, PROTOCOL_VERSION
 )
 from shared.database import Database
@@ -49,6 +49,18 @@ def _load_token_secret() -> str:
     return ""
 
 _TOKEN_SECRET = _load_token_secret()
+
+# Tipos de mensagem que requerem verificação de settings
+_SHELL_MSG_TYPES = {
+    MessageType.SHELL_START.value, MessageType.SHELL_COMMAND.value,
+    MessageType.SHELL_INPUT.value, MessageType.SHELL_RESIZE.value,
+    MessageType.CONSOLE_START.value, MessageType.CONSOLE_INPUT.value,
+    MessageType.CONSOLE_STOP.value,
+}
+_FILE_MSG_TYPES = {
+    MessageType.FILE_LIST_REQUEST.value, MessageType.FILE_DOWNLOAD_REQUEST.value,
+    MessageType.FILE_UPLOAD_START.value, MessageType.FILE_CHUNK.value,
+}
 
 
 def _verify_viewer_token(token: str) -> Optional[dict]:
@@ -134,6 +146,10 @@ class RelayServer:
 
         self.start_time = time.time()
 
+        # Cache de settings (TTL 60s)
+        self._settings_cache: dict = {}
+        self._settings_cache_at: float = 0.0
+
     async def init_db(self):
         """Conecta ao banco e limpa estados stale."""
         await self.db.connect()
@@ -190,6 +206,7 @@ class RelayServer:
                    "browser_frame",
                    "browser_html",
                    "browser_status",
+                   "update_agent_result",
                    "ad_response",
                    "ad_event"):
             await self.relay_to_viewer(ws, msg)
@@ -254,6 +271,10 @@ class RelayServer:
 
         pw_hash = data.get("password_hash", "")
 
+        # Prefer agent-reported LAN IP over WebSocket connection IP (which may be loopback)
+        agent_ip = data.get("ip_address", "").strip()
+        effective_ip = agent_ip if agent_ip and not agent_ip.startswith("127.") else ip
+
         # Salvar no banco
         await self.db.register_agent(
             agent_id=agent_id, password_hash=pw_hash,
@@ -261,7 +282,7 @@ class RelayServer:
             os_type=data.get("os_type", ""),
             os_version=data.get("os_version", ""),
             username=data.get("username", ""),
-            ip_address=ip,
+            ip_address=effective_ip,
             screen_width=data.get("screen_width", 0),
             screen_height=data.get("screen_height", 0),
         )
@@ -279,7 +300,7 @@ class RelayServer:
             os_type=data.get("os_type", ""),
             os_version=data.get("os_version", ""),
             username=data.get("username", ""),
-            ip_address=ip, password_hash=pw_hash,
+            ip_address=effective_ip, password_hash=pw_hash,
             screen_width=data.get("screen_width", 0),
             screen_height=data.get("screen_height", 0),
             version=data.get("version", ""),
@@ -305,7 +326,7 @@ class RelayServer:
                 data={"reason": "Token inválido ou expirado. Faça login no painel."}))
             return
 
-        viewer_id = msg.data.get("viewer_id", generate_session_id())
+        viewer_id = generate_session_id()  # sempre gerado server-side; ignorar cliente
         viewer_name = msg.data.get("viewer_name", token_data.get("email", ""))
         viewer = LiveViewer(
             viewer_id=viewer_id, websocket=ws, ip_address=ip,
@@ -388,12 +409,21 @@ class RelayServer:
             return await self._send(ws, create_message(MessageType.CONNECT_REJECT,
                 data={"reason": "Agente não encontrado ou offline"}))
 
-        if agent.password_hash and hash_password(password) != agent.password_hash:
-            await self.db.log_event("connect_failed", agent_id=agent_id,
-                                    viewer_id=viewer_id, ip_address=ip,
-                                    details={"reason": "wrong_password"})
-            return await self._send(ws, create_message(MessageType.CONNECT_REJECT,
-                data={"reason": "Senha incorreta"}))
+        if agent.password_hash:
+            if not verify_password(password, agent.password_hash):
+                await self.db.log_event("connect_failed", agent_id=agent_id,
+                                        viewer_id=viewer_id, ip_address=ip,
+                                        details={"reason": "wrong_password"})
+                return await self._send(ws, create_message(MessageType.CONNECT_REJECT,
+                    data={"reason": "Senha incorreta"}))
+            # Upgrade lazy SHA-256 → bcrypt após verificação bem-sucedida
+            if not (agent.password_hash.startswith("$2b$") or
+                    agent.password_hash.startswith("$2a$") or
+                    agent.password_hash.startswith("$2y$")):
+                new_hash = hash_password_bcrypt(password)
+                await self.db.update_agent_password_hash(agent_id, new_hash)
+                agent.password_hash = new_hash
+                logger.info(f"Senha do agente {agent_id} migrada SHA-256 → bcrypt")
 
         # Criar sessão
         session_id = generate_session_id()
@@ -437,6 +467,16 @@ class RelayServer:
                 f"(sender={sender_viewer_id}, owner={s.viewer_id})"
             )
             return
+        # Verificar settings globais de funcionalidade
+        settings = await self._get_cached_settings()
+        if msg.type in _SHELL_MSG_TYPES and settings.get("allow_shell") == "false":
+            logger.warning(f"Shell bloqueado por configuração global: sessão {msg.session_id[:8]}")
+            return
+        if msg.type in _FILE_MSG_TYPES and settings.get("allow_file_transfer") == "false":
+            logger.warning(f"Transferência de arquivo bloqueada por configuração global: sessão {msg.session_id[:8]}")
+            return
+        if msg.type not in ("shell_input", "shell_resize", "mouse_event", "keyboard_event", "browser_scroll", "browser_input", "ping", "pong"):
+            logger.debug(f"relay_to_agent: tipo={msg.type} sessão={msg.session_id[:8]}")
         a = self.agents.get(s.agent_id)
         if a:
             await self._send(a.websocket, msg.to_json())
@@ -454,6 +494,8 @@ class RelayServer:
                 f"(sender={sender_agent_id}, owner={s.agent_id})"
             )
             return
+        if msg.type not in ("shell_output", "screen_frame", "console_frame", "browser_html", "browser_frame", "ping", "pong"):
+            logger.debug(f"relay_to_viewer: tipo={msg.type} sessão={msg.session_id[:8]}")
         v = self.viewers.get(s.viewer_id)
         if v:
             s.bytes_transferred += len(msg.to_json())
@@ -480,6 +522,10 @@ class RelayServer:
         """Relay de chunks de arquivo com verificação de ownership."""
         s = self.sessions.get(msg.session_id)
         if not s:
+            return
+        settings = await self._get_cached_settings()
+        if settings.get("allow_file_transfer") == "false":
+            logger.warning(f"Chunk de arquivo bloqueado por configuração global: sessão {msg.session_id[:8]}")
             return
         sender_agent_id  = self.ws_to_agent.get(ws)
         sender_viewer_id = self.ws_to_viewer.get(ws)
@@ -582,6 +628,18 @@ class RelayServer:
             except: pass
 
         logger.info(f"Sessão encerrada: {session_id[:12]}")
+
+    # ─── Settings cache ───
+
+    async def _get_cached_settings(self) -> dict:
+        now = time.time()
+        if now - self._settings_cache_at > 60:
+            try:
+                self._settings_cache = await self.db.get_all_settings()
+                self._settings_cache_at = now
+            except Exception as e:
+                logger.error(f"Erro ao carregar settings: {e}")
+        return self._settings_cache
 
     # ─── Helpers ───
 

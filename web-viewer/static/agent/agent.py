@@ -32,7 +32,7 @@ import base64
 import shutil
 import urllib.request
 
-AGENT_VERSION = "1.4.0"
+AGENT_VERSION = "1.4.1"
 
 import websockets
 
@@ -57,6 +57,49 @@ def compute_binding_token(binding_secret: str, agent_id: str) -> str:
     return hashlib.sha256(f"{binding_secret}{agent_id}".encode()).hexdigest()
 
 
+def get_network_interfaces() -> list:
+    """Return all non-loopback IPv4 addresses from all interfaces."""
+    result = []
+    try:
+        import re
+        out = subprocess.check_output(
+            ["ip", "-4", "addr", "show"],
+            stderr=subprocess.DEVNULL, text=True
+        )
+        current = None
+        for line in out.splitlines():
+            m = re.match(r"^\d+: (\S+):", line)
+            if m:
+                current = m.group(1).rstrip("@").rstrip(":")
+            m = re.match(r"^\s+inet (\d+\.\d+\.\d+\.\d+)/(\d+)", line)
+            if m and current and current != "lo":
+                result.append({"iface": current, "ip": m.group(1), "prefix": m.group(2)})
+    except Exception:
+        pass
+    if not result:
+        # Fallback: resolve hostname
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+            if not ip.startswith("127."):
+                result.append({"iface": "eth0", "ip": ip, "prefix": "24"})
+        except Exception:
+            pass
+    return result
+
+
+def get_primary_ip() -> str:
+    """Return the best local non-loopback IPv4 address."""
+    interfaces = get_network_interfaces()
+    # Prefer eth0/ens/eno/em over others
+    for iface_prefix in ("eth", "ens", "eno", "em", "enp", "wlan", "wlp"):
+        for entry in interfaces:
+            if entry["iface"].startswith(iface_prefix):
+                return entry["ip"]
+    if interfaces:
+        return interfaces[0]["ip"]
+    return ""
+
+
 def get_system_info() -> dict:
     uname = platform.uname()
     return {
@@ -66,6 +109,7 @@ def get_system_info() -> dict:
         "username": os.environ.get("USER", os.environ.get("LOGNAME", "unknown")),
         "screen_width": 0,
         "screen_height": 0,
+        "ip_address": get_primary_ip(),
     }
 
 
@@ -2473,6 +2517,8 @@ class LinuxAgent:
             info["uptime"] = (f"{days}d " if days else "") + f"{hours:02d}:{mins:02d}"
         except Exception:
             pass
+        # Network interfaces
+        info["network_interfaces"] = get_network_interfaces()
         await self._send({"type": "system_info", "data": info,
                            "session_id": self.session_id, "timestamp": time.time()})
 

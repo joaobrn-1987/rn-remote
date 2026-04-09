@@ -28,8 +28,6 @@ logger = logging.getLogger("web")
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 _TOKEN_SECRET_FILE = "/etc/rnremote/token_secret"
-
-
 def _load_token_secret() -> str:
     try:
         with open(_TOKEN_SECRET_FILE) as f:
@@ -50,8 +48,8 @@ def _load_token_secret() -> str:
 _TOKEN_SECRET = _load_token_secret()
 
 
-def _generate_token(user_id: int, email: str, role: str) -> str:
-    """Gera token HMAC-SHA256 com role embutido. Formato: user_id:email:role:expiry:sig"""
+def _generate_token(user_id: int, email: str, role: str = "viewer") -> str:
+    """Gera token HMAC-SHA256. Formato: user_id:email:role:expiry:sig"""
     expiry = int(time.time()) + 86400  # 24 horas
     payload = f"{user_id}:{email}:{role}:{expiry}"
     sig = hmac.new(_TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -60,8 +58,9 @@ def _generate_token(user_id: int, email: str, role: str) -> str:
 
 def _verify_token(token: str) -> Optional[dict]:
     """
-    Verifica token HMAC e retorna dict {user_id, email, role} se válido.
-    Suporta formato novo (5 partes) e legado (4 partes sem role).
+    Verifica token HMAC e retorna dict {user_id, email} se válido.
+    Aceita formato atual (5 partes: user_id:email:role:expiry:sig) e
+    tokens de transição sem role (4 partes: user_id:email:expiry:sig).
     """
     try:
         parts = token.split(":")
@@ -69,9 +68,8 @@ def _verify_token(token: str) -> Optional[dict]:
             user_id_s, email, role, expiry_s, sig = parts
             payload = f"{user_id_s}:{email}:{role}:{expiry_s}"
         elif len(parts) == 4:
-            # Token legado sem role — tratar como não-admin para forçar re-login seguro
+            # Tokens de transição sem role — aceitos durante janela de migração (24h)
             user_id_s, email, expiry_s, sig = parts
-            role = ""
             payload = f"{user_id_s}:{email}:{expiry_s}"
         else:
             return None
@@ -80,18 +78,18 @@ def _verify_token(token: str) -> Optional[dict]:
             return None
         if time.time() >= int(expiry_s):
             return None
-        return {"user_id": int(user_id_s), "email": email, "role": role}
+        return {"user_id": int(user_id_s), "email": email}
     except Exception:
         return None
 
 
-def _is_admin(token_data: dict) -> bool:
-    """Retorna True se o usuário tem papel admin ou superior."""
-    if not token_data:
-        return False
-    role = token_data.get("role", "")
-    email = token_data.get("email", "")
-    return role in ("superadmin", "admin")
+def _relay_role_from_permissions(is_master: bool, permissions: dict) -> str:
+    """Determina o role para o relay a partir do perfil do usuário."""
+    if is_master:
+        return "superadmin"
+    if permissions.get("agents", {}).get("can_edit"):
+        return "admin"
+    return "viewer"
 
 
 # ─── Rate limiting em memória (login, MFA) ───
@@ -118,6 +116,18 @@ def _check_rate_limit(store: dict, key: str, window: int = _RATE_WINDOW,
 
 def _get_client_ip(req) -> str:
     return req.headers.get("X-Real-IP") or req.headers.get("X-Forwarded-For", "").split(",")[0].strip() or req.remote or ""
+
+
+# ─── Códigos de acesso one-time para /admin (TTL curto) ───
+_admin_codes: dict = {}  # {code: expiry_timestamp}
+_ADMIN_CODE_TTL = 30     # 30 segundos
+
+
+def _admin_codes_cleanup():
+    now = time.time()
+    expired = [k for k, v in _admin_codes.items() if v < now]
+    for k in expired:
+        del _admin_codes[k]
 
 
 # ─── MFA: armazena códigos temporários em memória ───
@@ -182,29 +192,34 @@ class WebPanel:
 
     def __init__(self, db_dsn: str):
         self.db = Database(db_dsn)
+        self._master_user_id: Optional[int] = None
 
     async def init(self):
         await self.db.connect()
+        self._master_user_id = await self.db.get_master_user_id()
+        if self._master_user_id:
+            logger.info(f"Conta master carregada: user_id={self._master_user_id}")
+        else:
+            logger.warning("Nenhuma conta master encontrada no banco (is_master=TRUE)")
 
     # ─── Helpers de autenticação ───
 
+    def _is_master(self, token_data: dict) -> bool:
+        """Retorna True se o token pertence à conta master do sistema."""
+        return (bool(token_data) and
+                self._master_user_id is not None and
+                token_data.get("user_id") == self._master_user_id)
+
     def _require_auth(self, req) -> Optional[dict]:
-        """Retorna token_data {user_id, email, role} se Bearer token válido, None caso contrário."""
+        """Retorna token_data {user_id, email} se Bearer token válido, None caso contrário."""
         auth = req.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
             return None
         return _verify_token(auth[7:])
 
-    def _require_admin(self, req) -> Optional[dict]:
-        """Retorna token_data apenas se o usuário for admin ou superadmin."""
-        token_data = self._require_auth(req)
-        if not token_data:
-            return None
-        return token_data if _is_admin(token_data) else None
-
     async def _check_profile_permission(self, token_data: dict, module: str, action: str) -> bool:
-        """Verifica permissão de perfil para usuários não-admin. Admins sempre passam."""
-        if _is_admin(token_data):
+        """Verifica permissão de perfil. Master tem acesso total; demais verificam perfil."""
+        if self._is_master(token_data):
             return True
         perms = await self.db.get_user_permissions(token_data["user_id"])
         if perms.get("*"):
@@ -221,16 +236,30 @@ class WebPanel:
         return resp
 
     async def admin_page(self, req):
-        token = req.query.get("token", "")
-        if not token or not _verify_token(token):
+        code = req.query.get("code", "")
+        _admin_codes_cleanup()
+        expiry = _admin_codes.pop(code, None)
+        if not code or expiry is None or time.time() >= expiry:
             raise web.HTTPFound("/?redirect=admin")
         return web.FileResponse(os.path.join(STATIC_DIR, "admin.html"))
+
+    async def api_admin_access(self, req):
+        """Gera um código one-time (30s) para acessar /admin sem expor o token na URL."""
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        _admin_codes_cleanup()
+        code = secrets.token_hex(32)
+        _admin_codes[code] = time.time() + _ADMIN_CODE_TTL
+        return web.json_response({"ok": True, "code": code})
 
     # ─── API: Auth ───
 
     async def api_login(self, req):
         ip = _get_client_ip(req)
         if not _check_rate_limit(_login_attempts, ip, max_attempts=_RATE_MAX_LOGIN):
+            await self.db.log_event("login_rate_limited", ip_address=ip,
+                                    details={"reason": "too_many_attempts"})
             return web.json_response(
                 {"ok": False, "error": "Muitas tentativas. Aguarde 5 minutos."},
                 status=429
@@ -238,28 +267,28 @@ class WebPanel:
         data = await req.json()
         user = await self.db.authenticate_admin(
             data.get("email", ""),
-            data.get("password", "")   # senha em claro — hash feito no db.authenticate_admin
+            data.get("password", "")
         )
         if user:
-            role = user.get('role') or ''
+            is_master_user = bool(user.get('is_master'))
             # Se MFA estiver ativo, enviar código por e-mail
             if user.get('mfa_enabled'):
                 _mfa_cleanup()
                 code = ''.join([str(secrets.randbelow(10)) for _ in range(8)])
                 mfa_session = secrets.token_hex(24)
-                if _is_admin({"email": user['email'], "role": role}):
+                if is_master_user:
                     permissions = {'*': True}
                 else:
                     permissions = await self.db.get_user_permissions(user['id'])
                 access = await self.db.get_user_access(user['id'])
+                relay_role = _relay_role_from_permissions(is_master_user, permissions)
                 _mfa_pending[mfa_session] = {
                     'user_id': user['id'],
                     'code': code,
                     'expires_at': time.time() + MFA_CODE_TTL,
                     'user_data': {
-                        'token': _generate_token(user['id'], user['email'], role),
+                        'token': _generate_token(user['id'], user['email'], relay_role),
                         'user': user['display_name'] or user['email'],
-                        'role': role,
                         'user_id': user['id'],
                         'profile_id': user.get('profile_id'),
                         'permissions': permissions,
@@ -274,20 +303,26 @@ class WebPanel:
                     return web.json_response({"ok": False, "error": f"Erro ao enviar código MFA: {e}"}, status=500)
                 return web.json_response({"ok": True, "mfa_required": True, "mfa_session": mfa_session})
 
-            token = _generate_token(user['id'], user['email'], role)
-            if _is_admin({"email": user['email'], "role": role}):
+            if is_master_user:
                 permissions = {'*': True}
             else:
                 permissions = await self.db.get_user_permissions(user['id'])
             access = await self.db.get_user_access(user['id'])
+            relay_role = _relay_role_from_permissions(is_master_user, permissions)
+            token = _generate_token(user['id'], user['email'], relay_role)
+            await self.db.log_event("login_success", ip_address=ip,
+                                    details={"email": user['email'], "user_id": user['id']})
             return web.json_response({
                 "ok": True, "token": token,
                 "user": user['display_name'] or user['email'],
-                "role": role, "user_id": user['id'],
+                "user_id": user['id'],
                 "profile_id": user.get('profile_id'),
                 "permissions": permissions,
                 "access": access,
             })
+        email_attempted = data.get("email", "")
+        await self.db.log_event("login_failed", ip_address=ip,
+                                details={"email": email_attempted, "reason": "invalid_credentials"})
         return web.json_response({"ok": False, "error": "Credenciais inválidas"}, status=401)
 
     async def api_mfa_verify(self, req):
@@ -309,8 +344,11 @@ class WebPanel:
         return web.json_response({"ok": True, **entry['user_data']})
 
     async def api_mfa_test_smtp(self, req):
-        if not self._require_admin(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "general", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         data = await req.json()
         to_email = data.get("to_email", "").strip()
         if not to_email:
@@ -353,8 +391,11 @@ class WebPanel:
         return web.json_response({"ok": False}, status=401)
 
     async def api_provision_agent(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "agents", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
 
         data = await req.json()
         nickname        = data.get("nickname", "").strip()
@@ -367,7 +408,7 @@ class WebPanel:
             )
 
         binding_secret  = secrets.token_hex(32)
-        password_hash   = hashlib.sha256(access_password.encode()).hexdigest()
+        password_hash   = hash_password_bcrypt(access_password)
 
         try:
             agent_id = await self.db.provision_agent(
@@ -407,8 +448,11 @@ class WebPanel:
         return web.json_response(profiles)
 
     async def api_create_profile(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "profiles", "can_create"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         data = await req.json()
         name = data.get("name", "").strip()
         if not name:
@@ -423,8 +467,11 @@ class WebPanel:
             return web.json_response({"ok": False, "error": "Nome já cadastrado"}, status=400)
 
     async def api_update_profile(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "profiles", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         profile_id = int(req.match_info['profile_id'])
         data = await req.json()
         kwargs = {}
@@ -436,8 +483,11 @@ class WebPanel:
         return web.json_response({"ok": True})
 
     async def api_delete_profile(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "profiles", "can_delete"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         profile_id = int(req.match_info['profile_id'])
         await self.db.delete_profile(profile_id)
         return web.json_response({"ok": True})
@@ -453,8 +503,11 @@ class WebPanel:
         return web.json_response(perms)
 
     async def api_save_profile_permissions(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "profiles", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         profile_id = int(req.match_info['profile_id'])
         data = await req.json()
         permissions = data.get("permissions", [])
@@ -475,15 +528,19 @@ class WebPanel:
         if not token_data:
             return web.json_response({"ok": False}, status=401)
         target_user_id = int(req.match_info['user_id'])
-        # Admin pode ver acesso de qualquer usuário; usuário comum só o próprio
-        if not _is_admin(token_data) and token_data["user_id"] != target_user_id:
+        # Master ou quem pode gerir usuários pode ver acesso de qualquer um; demais só o próprio
+        can_manage = self._is_master(token_data) or await self._check_profile_permission(token_data, "users", "can_view")
+        if not can_manage and token_data["user_id"] != target_user_id:
             return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         access = await self.db.get_user_access(target_user_id)
         return web.json_response(access)
 
     async def api_set_user_access(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "users", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         user_id = int(req.match_info['user_id'])
         data = await req.json()
         all_clients = bool(data.get("all_clients", True))
@@ -496,8 +553,11 @@ class WebPanel:
     # ─── API: Usuários Admin ───
 
     async def api_get_users(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "users", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         users = await self.db.get_all_admin_users_with_profile()
         for u in users:
             for k, v in u.items():
@@ -506,18 +566,20 @@ class WebPanel:
         return web.json_response(users)
 
     async def api_create_user(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "users", "can_create"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         data = await req.json()
         email = data.get("email", "").strip()
         password = data.get("password", "")
         display_name = data.get("display_name", "").strip()
-        role = data.get("role", "admin")
         profile_id = data.get("profile_id")
         if not email or not password:
             return web.json_response({"ok": False, "error": "E-mail e senha são obrigatórios"}, status=400)
         try:
-            user = await self.db.create_admin_user(email, hash_password_bcrypt(password), display_name, role)
+            user = await self.db.create_admin_user(email, hash_password_bcrypt(password), display_name)
             if profile_id and user.get("id"):
                 await self.db.update_user_profile(user["id"], int(profile_id))
             for k, v in user.items():
@@ -532,46 +594,57 @@ class WebPanel:
             return web.json_response({"ok": False, "error": f"Erro ao criar usuário: {err_str}"}, status=400)
 
     async def api_update_user(self, req):
-        token_data = self._require_admin(req)
+        token_data = self._require_auth(req)
         if not token_data:
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
         user_id = int(req.match_info['user_id'])
+        target = await self.db.get_admin_user_by_id(user_id)
+        is_target_master = target and bool(target.get('is_master'))
+
+        if is_target_master:
+            # Apenas o próprio master pode editar a conta master
+            if not self._is_master(token_data):
+                return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
+        else:
+            if not await self._check_profile_permission(token_data, "users", "can_edit"):
+                return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
+
         data = await req.json()
-        # Impede que admin rebaixe o próprio role
-        if token_data["user_id"] == user_id and "role" in data:
-            return web.json_response({"ok": False, "error": "Não é possível alterar o próprio role"}, status=400)
         kwargs = {}
         if "email" in data:
             kwargs["email"] = data["email"]
         if "password" in data and data["password"]:
             kwargs["password_hash"] = hash_password_bcrypt(data["password"])
-        if "display_name" in data:
+        if "display_name" in data and not is_target_master:
             kwargs["display_name"] = data["display_name"]
-        if "role" in data:
-            kwargs["role"] = data["role"]
         if "is_active" in data:
             kwargs["is_active"] = bool(data["is_active"])
         if "mfa_enabled" in data:
             kwargs["mfa_enabled"] = bool(data["mfa_enabled"])
-        await self.db.update_admin_user(user_id, **kwargs)
-        if "profile_id" in data:
+        if kwargs:
+            await self.db.update_admin_user(user_id, **kwargs)
+        if "profile_id" in data and not is_target_master:
+            # Impede auto-elevação: usuário não pode alterar o próprio perfil
+            if token_data["user_id"] == user_id:
+                return web.json_response({"ok": False, "error": "Não é possível alterar o próprio perfil"}, status=400)
             pid = int(data["profile_id"]) if data["profile_id"] else None
             await self.db.update_user_profile(user_id, pid)
         return web.json_response({"ok": True})
 
     async def api_delete_user(self, req):
-        token_data = self._require_admin(req)
+        token_data = self._require_auth(req)
         if not token_data:
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "users", "can_delete"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         user_id = int(req.match_info['user_id'])
         # Impede deleção do próprio usuário
         if token_data["user_id"] == user_id:
             return web.json_response({"ok": False, "error": "Não é possível excluir o próprio usuário"}, status=400)
-        # Protege o último superadmin ativo
-        user = await self.db.get_admin_user_by_id(user_id)
-        if user and user.get('role') == 'superadmin':
-            if await self.db.count_active_superadmins() <= 1:
-                return web.json_response({"ok": False, "error": "Não é possível remover o único superadmin ativo"}, status=403)
+        # Protege a conta master
+        target = await self.db.get_admin_user_by_id(user_id)
+        if target and target.get('is_master'):
+            return web.json_response({"ok": False, "error": "A conta master não pode ser excluída"}, status=403)
         await self.db.delete_admin_user(user_id)
         return web.json_response({"ok": True})
 
@@ -585,6 +658,53 @@ class WebPanel:
             return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         stats = await self.db.get_stats()
         return web.json_response(stats)
+
+    # Arquivos permitidos para download autenticado (whitelist explícita)
+    _AGENT_DOWNLOAD_FILES = {
+        "agent.py":             "agent.py",
+        "agent-windows.py":     "agent-windows.py",
+        "agent-pfsense.py":     "agent-pfsense.py",
+        "install.sh":           "install.sh",
+        "install-ubuntu.sh":    "install-ubuntu.sh",
+        "install-centos.sh":    "install-centos.sh",
+        "install-pfsense.sh":   "install-pfsense.sh",
+        "install-windows.ps1":  "install-windows.ps1",
+        "uninstall-ubuntu.sh":  "uninstall-ubuntu.sh",
+        "uninstall-centos.sh":  "uninstall-centos.sh",
+        "uninstall-pfsense.sh": "uninstall-pfsense.sh",
+        "uninstall-windows.ps1":"uninstall-windows.ps1",
+    }
+
+    async def api_agent_download(self, req):
+        """Download autenticado de arquivos de agente.
+        Aceita: Bearer token (painel) OU X-Agent-Id + X-Binding-Token (auto-update do agente).
+        """
+        # Autenticação via binding token (agentes fazendo auto-update)
+        agent_id     = req.headers.get("X-Agent-Id", "")
+        binding_tok  = req.headers.get("X-Binding-Token", "")
+        if agent_id and binding_tok:
+            agent = await self.db.get_agent(agent_id)
+            if not agent or not agent.get("binding_hash") or agent["binding_hash"] != binding_tok:
+                return web.json_response({"ok": False, "error": "Binding inválido"}, status=403)
+            # binding válido — prossegue para servir o arquivo
+        else:
+            # Autenticação via Bearer token do painel
+            token_data = self._require_auth(req)
+            if not token_data:
+                return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+            if not await self._check_profile_permission(token_data, "agents", "can_view"):
+                return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
+        filename = req.match_info.get("filename", "")
+        if filename not in self._AGENT_DOWNLOAD_FILES:
+            return web.json_response({"ok": False, "error": "Arquivo não encontrado"}, status=404)
+        agent_dir = os.path.join(os.path.dirname(__file__), "static", "agent")
+        file_path = os.path.join(agent_dir, filename)
+        if not os.path.isfile(file_path):
+            return web.json_response({"ok": False, "error": "Arquivo não encontrado"}, status=404)
+        return web.FileResponse(
+            file_path,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
 
     async def api_agent_version(self, req):
         token_data = self._require_auth(req)
@@ -648,8 +768,11 @@ class WebPanel:
         return web.json_response(sessions)
 
     async def api_audit(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "audit", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         limit = int(req.query.get("limit", 200))
         logs = await self.db.get_audit_logs(limit)
         for l in logs:
@@ -659,15 +782,20 @@ class WebPanel:
         return web.json_response(logs)
 
     async def api_settings(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
         if req.method == "GET":
+            if not await self._check_profile_permission(token_data, "general", "can_view"):
+                return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
             settings = await self.db.get_all_settings()
             # Não expor credenciais SMTP em claro — mascarar a senha
             if 'smtp_pass' in settings and settings['smtp_pass']:
                 settings['smtp_pass'] = '********'
             return web.json_response(settings)
         elif req.method == "POST":
+            if not await self._check_profile_permission(token_data, "general", "can_edit"):
+                return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
             data = await req.json()
             for k, v in data.items():
                 # Não sobreescrever smtp_pass com o placeholder mascarado
@@ -694,17 +822,27 @@ class WebPanel:
         return web.json_response({"ok": True})
 
     async def api_delete_agent(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "agents", "can_delete"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         agent_id = req.match_info['agent_id']
-        await self.db.delete_agent(agent_id)
+        try:
+            await self.db.delete_agent(agent_id)
+        except Exception as e:
+            logger.error(f"Erro ao excluir agente {agent_id}: {e}")
+            return web.json_response({"ok": False, "error": "Erro ao excluir agente no banco"}, status=500)
         return web.json_response({"ok": True})
 
     # ─── API: Grupos ───
 
     async def api_get_groups(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "groups", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         groups = await self.db.get_all_groups()
         for g in groups:
             for k, v in g.items():
@@ -713,8 +851,11 @@ class WebPanel:
         return web.json_response(groups)
 
     async def api_create_group(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "groups", "can_create"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         data = await req.json()
         name = data.get("name", "").strip()
         if not name:
@@ -735,8 +876,11 @@ class WebPanel:
             return web.json_response({"ok": False, "error": "Nome já existe"}, status=400)
 
     async def api_update_group(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "groups", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         group_id = int(req.match_info['group_id'])
         data = await req.json()
         cid = data.get("client_id")
@@ -753,15 +897,21 @@ class WebPanel:
         return web.json_response({"ok": True})
 
     async def api_delete_group(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "groups", "can_delete"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         group_id = int(req.match_info['group_id'])
         await self.db.delete_group(group_id)
         return web.json_response({"ok": True})
 
     async def api_get_client_groups(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "groups", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         client_id = int(req.match_info['client_id'])
         groups = await self.db.get_client_groups(client_id)
         return web.json_response(groups)
@@ -777,14 +927,20 @@ class WebPanel:
         return web.json_response(agents)
 
     async def api_get_agents_in_any_group(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "groups", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         ids = await self.db.get_agents_in_any_group()
         return web.json_response(ids)
 
     async def api_add_agent_to_group(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "groups", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         group_id = int(req.match_info['group_id'])
         data = await req.json()
         agent_id = data.get("agent_id", "").strip()
@@ -799,8 +955,11 @@ class WebPanel:
         return web.json_response({"ok": True})
 
     async def api_remove_agent_from_group(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "groups", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         group_id = int(req.match_info['group_id'])
         agent_id = req.match_info['agent_id']
         await self.db.remove_agent_from_group(group_id, agent_id)
@@ -809,8 +968,11 @@ class WebPanel:
     # ─── API: Clientes ───
 
     async def api_get_clients(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "clients", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         clients = await self.db.get_all_clients()
         for c in clients:
             for k, v in c.items():
@@ -819,8 +981,11 @@ class WebPanel:
         return web.json_response(clients)
 
     async def api_create_client(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "clients", "can_create"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         data = await req.json()
         name = data.get("name", "").strip()
         if not name:
@@ -840,8 +1005,11 @@ class WebPanel:
         return web.json_response({"ok": True, "client": client})
 
     async def api_update_client(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "clients", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         client_id = int(req.match_info['client_id'])
         data = await req.json()
         update_kwargs = dict(
@@ -859,8 +1027,11 @@ class WebPanel:
         return web.json_response({"ok": True})
 
     async def api_delete_client(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "clients", "can_delete"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         client_id = int(req.match_info['client_id'])
         await self.db.delete_client(client_id)
         return web.json_response({"ok": True})
@@ -876,14 +1047,20 @@ class WebPanel:
         return web.json_response(agents)
 
     async def api_get_agents_in_any_client(self, req):
-        if not self._require_auth(req):
+        token_data = self._require_auth(req)
+        if not token_data:
             return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "clients", "can_view"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         ids = await self.db.get_agents_in_any_client()
         return web.json_response(ids)
 
     async def api_add_agent_to_client(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "clients", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         client_id = int(req.match_info['client_id'])
         data = await req.json()
         agent_id = data.get("agent_id", "").strip()
@@ -898,8 +1075,11 @@ class WebPanel:
         return web.json_response({"ok": True})
 
     async def api_remove_agent_from_client(self, req):
-        if not self._require_admin(req):
-            return web.json_response({"ok": False, "error": "Não autorizado"}, status=403)
+        token_data = self._require_auth(req)
+        if not token_data:
+            return web.json_response({"ok": False, "error": "Não autorizado"}, status=401)
+        if not await self._check_profile_permission(token_data, "clients", "can_edit"):
+            return web.json_response({"ok": False, "error": "Acesso negado"}, status=403)
         client_id = int(req.match_info['client_id'])
         agent_id = req.match_info['agent_id']
         await self.db.remove_agent_from_client(client_id, agent_id)
@@ -930,10 +1110,12 @@ def create_app(db_dsn: str):
     app.router.add_post("/api/mfa/resend", panel.api_mfa_resend)
     app.router.add_post("/api/mfa/test-smtp", panel.api_mfa_test_smtp)
     app.router.add_get("/api/verify", panel.api_verify)
+    app.router.add_get("/api/admin-access", panel.api_admin_access)
     app.router.add_post("/api/agents/provision", panel.api_provision_agent)
     app.router.add_get("/api/stats", panel.api_stats)
     app.router.add_get("/api/agents", panel.api_agents)
     app.router.add_get("/api/agent/version", panel.api_agent_version)
+    app.router.add_get("/api/agents/download/{filename}", panel.api_agent_download)
     app.router.add_patch("/api/agents/{agent_id}/nickname", panel.api_update_agent_nickname)
     app.router.add_delete("/api/agents/{agent_id}", panel.api_delete_agent)
     app.router.add_get("/api/sessions", panel.api_sessions)

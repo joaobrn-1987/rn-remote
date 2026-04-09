@@ -2,14 +2,14 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>RN Remote - Acesso Remoto</title>
     <script>
         // Força reload se a versão do app mudou desde a última visita
-        const _APP_BUILD = '20260402-7';
+        const _APP_BUILD = '20260409-5';
         if (sessionStorage.getItem('app_build') !== _APP_BUILD) {
             sessionStorage.setItem('app_build', _APP_BUILD);
             if (performance.navigation ? performance.navigation.type !== 1 : !sessionStorage.getItem('_reloaded')) {
@@ -20,9 +20,9 @@
             sessionStorage.removeItem('_reloaded');
         }
     </script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <link rel="stylesheet" href="/static/lib/xterm.css">
+    <script src="/static/lib/xterm.js"></script>
+    <script src="/static/lib/xterm-addon-fit.js"></script>
     <style>
         :root {
             --bg-primary: #f0f4fa;
@@ -46,7 +46,12 @@
         }
 
         * { margin:0; padding:0; box-sizing:border-box; }
-        body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--bg-primary); color:var(--text); height:100vh; overflow:hidden; display:flex; flex-direction:column; }
+        /* Ensure emoji icons render as color emoji on all platforms */
+        .si-icon, .info-card-icon, .mc-icon, .file-icon {
+            font-variant-emoji: emoji;
+            -webkit-font-smoothing: antialiased;
+        }
+        body { font-family:'Inter',system-ui,-apple-system,sans-serif; background:var(--bg-primary); color:var(--text); height:100vh; height:100dvh; overflow:hidden; display:flex; flex-direction:column; }
 
         /* Header */
         .header { display:flex; align-items:center; justify-content:space-between; padding:0 20px; height:48px; background:var(--bg-secondary); border-bottom:1px solid var(--border); box-shadow:0 1px 0 var(--border), var(--glow); }
@@ -75,7 +80,7 @@
         .error-msg { color:var(--danger); font-size:13px; margin-top:8px; display:none; }
 
         /* Main Layout */
-        .main-layout { display:none; flex-direction:column; height:100%; }
+        .main-layout { display:none; flex-direction:column; flex:1; min-height:0; overflow:hidden; }
         .toolbar { display:flex; align-items:center; gap:8px; padding:8px 16px; background:var(--bg-secondary); border-bottom:1px solid var(--border); }
         .toolbar .tab { padding:6px 14px; border-radius:6px; font-size:13px; cursor:pointer; color:var(--text-dim); transition:all .2s; }
         .toolbar .tab:hover { background:rgba(0,0,0,0.05); color:var(--text); }
@@ -158,7 +163,7 @@
         .sysinfo-loading { color:var(--text-dim); font-size:14px; padding:40px 0; text-align:center; }
 
         /* ── Machines Dashboard ───────────────────────────────── */
-        .machines-page { display:flex; flex-direction:column; height:100%; overflow:hidden; }
+        .machines-page { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; }
 
         /* Subheader */
         .machines-subheader { display:flex; align-items:center; gap:16px; padding:14px 24px; background:var(--bg-secondary); border-bottom:1px solid var(--border); flex-shrink:0; }
@@ -175,7 +180,7 @@
         .relay-status { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-dim); white-space:nowrap; }
 
         /* Grid */
-        .machines-body { flex:1; overflow-y:auto; padding:20px 24px; }
+        .machines-body { flex:1; overflow-y:auto; padding:20px 24px; min-height:0; }
         .machines-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:14px; }
 
         /* View toggle */
@@ -230,8 +235,9 @@
         .mc-detail { display:flex; flex-direction:column; gap:2px; }
         .mc-detail-label { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.6px; }
         .mc-detail-value { font-size:12px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .mc-update-bar { min-height:30px; display:flex; align-items:center; }
-        .mc-footer { display:flex; align-items:center; justify-content:flex-end; gap:8px; }
+        .mc-update-bar { display:flex; align-items:center; min-height:0; }
+        .mc-update-bar:empty { display:none; }
+        .mc-footer { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
         .btn-connect { display:inline-flex; align-items:center; gap:6px; padding:7px 16px; background:rgba(37,99,235,0.08); color:var(--accent); border:1px solid rgba(37,99,235,0.25); border-radius:7px; font-size:13px; font-weight:600; cursor:pointer; transition:all .2s; }
         .btn-connect:hover { background:rgba(37,99,235,0.15); box-shadow:var(--shadow); }
         .btn-edit-mc { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; background:rgba(99,102,241,.08); border:1px solid rgba(99,102,241,.3); border-radius:7px; font-size:12px; color:#818cf8; cursor:pointer; transition:all .2s; }
@@ -252,11 +258,17 @@
         .machines-empty span { font-size:40px; display:block; margin-bottom:12px; }
 
         /* Connect Prompt */
-        .connect-prompt { position:fixed; inset:0; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; z-index:500; backdrop-filter:blur(4px); }
+        .connect-prompt { position:fixed; inset:0; background:rgba(0,0,0,.65); display:flex; align-items:flex-end; justify-content:center; z-index:500; backdrop-filter:blur(4px); padding-bottom:env(safe-area-inset-bottom,0px); transition:top .15s, height .15s; }
+        @media (min-height: 500px) {
+            .connect-prompt { align-items:center; }
+        }
         .connect-prompt.hidden { display:none; }
-        .connect-prompt-box { background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:32px; width:380px; box-shadow:var(--shadow); }
+        .connect-prompt-box { background:var(--bg-card); border:1px solid var(--border); border-radius:14px 14px 0 0; padding:24px 24px max(24px, env(safe-area-inset-bottom,24px)) 24px; width:100%; max-width:420px; box-shadow:var(--shadow); max-height:85vh; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+        @media (min-height: 500px) {
+            .connect-prompt-box { border-radius:14px; padding:28px; width:380px; max-width:calc(100vw - 32px); max-height:min(520px,85vh); }
+        }
         .connect-prompt-box h3 { font-size:17px; font-weight:700; margin-bottom:4px; color:var(--text-bright); }
-        .connect-prompt-box p { font-size:13px; color:var(--text-dim); margin-bottom:20px; }
+        .connect-prompt-box p { font-size:13px; color:var(--text-dim); margin-bottom:16px; }
         .connect-prompt-actions { display:flex; gap:8px; margin-top:16px; }
 
         /* Scrollbar */
@@ -267,8 +279,8 @@
         .hidden { display:none!important; }
 
         /* ── App Body Layout ─────────────────────────────────── */
-        .app-body { display:flex; flex:1; overflow:hidden; }
-        .content-area { flex:1; overflow-y:auto; overflow-x:hidden; background:var(--bg-primary); }
+        .app-body { display:flex; flex:1; overflow:hidden; min-height:0; }
+        .content-area { flex:1; min-height:0; display:flex; flex-direction:column; overflow:hidden; background:var(--bg-primary); }
 
         /* ── Sidebar ─────────────────────────────────────────── */
         .sidebar {
@@ -380,7 +392,7 @@
         .sidebar-group-item.active { background:rgba(37,99,235,0.10); color:var(--accent); }
 
         /* ── Users Section ───────────────────────────────────── */
-        .users-section { display:flex; flex-direction:column; height:100%; overflow:hidden; background:var(--bg-primary); }
+        .users-section { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; background:var(--bg-primary); }
         .users-header { display:flex; align-items:center; justify-content:space-between; padding:16px 24px; background:var(--bg-secondary); border-bottom:1px solid var(--border); flex-shrink:0; }
         .users-header h2 { font-size:16px; font-weight:700; color:var(--text-bright); }
         .users-body { flex:1; overflow-y:auto; padding:20px 24px; }
@@ -389,9 +401,6 @@
         .data-table td { padding:12px 14px; font-size:13px; color:var(--text); border-bottom:1px solid rgba(0,0,0,.06); vertical-align:middle; }
         .data-table tr:last-child td { border-bottom:none; }
         .data-table tr:hover td { background:rgba(0,0,0,.03); }
-        .role-badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; }
-        .role-admin { background:rgba(59,130,246,.15); color:var(--accent); }
-        .role-viewer { background:rgba(100,116,139,.12); color:var(--text-dim); }
         .active-badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; background:rgba(5,150,105,0.10); color:var(--success); border:1px solid rgba(5,150,105,0.2); }
         .inactive-badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; background:rgba(220,38,38,0.08); color:var(--danger); border:1px solid rgba(220,38,38,0.15); }
         .table-actions { display:flex; gap:6px; }
@@ -630,6 +639,260 @@
         .color-opts { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
         .color-opt { width:24px; height:24px; border-radius:50%; cursor:pointer; border:2px solid transparent; transition:border-color .15s; }
         .color-opt.sel { border-color:var(--text-bright); }
+
+        /* ═══════════════════════════════════════════════
+           RESPONSIVE — Mobile & Tablet (iOS / Android)
+        ═══════════════════════════════════════════════ */
+
+        /* Hamburger button — hidden on desktop */
+        .btn-hamburger {
+            display: none;
+            align-items: center; justify-content: center;
+            width: 38px; height: 38px;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-dim);
+            cursor: pointer;
+            font-size: 18px;
+            flex-shrink: 0;
+            transition: all .15s;
+        }
+        .btn-hamburger:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* Sidebar backdrop for mobile drawer */
+        .sidebar-backdrop {
+            display: none;
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 199;
+            -webkit-backdrop-filter: blur(2px);
+            backdrop-filter: blur(2px);
+        }
+        .sidebar-backdrop.visible { display: block; }
+
+        /* iOS safe-area padding (Dynamic Island / notch / home indicator) */
+        @supports (padding: env(safe-area-inset-top)) {
+            body {
+                padding-bottom: env(safe-area-inset-bottom);
+            }
+            /* Header: compensa Dynamic Island/notch no topo */
+            .header {
+                padding-top: env(safe-area-inset-top, 0px);
+                height: calc(48px + env(safe-area-inset-top, 0px));
+                padding-left: max(20px, env(safe-area-inset-left));
+                padding-right: max(20px, env(safe-area-inset-right));
+            }
+            /* Sidebar mobile: drawer fixo precisa descer abaixo do Dynamic Island */
+            @media (max-width: 768px) {
+                .sidebar {
+                    padding-top: env(safe-area-inset-top, 0px);
+                }
+            }
+            .machines-subheader, .machines-body, .sidebar-nav, .files-toolbar,
+            .browser-toolbar, .ad-toolbar, .console-toolbar {
+                padding-left: max(12px, env(safe-area-inset-left));
+                padding-right: max(12px, env(safe-area-inset-right));
+            }
+        }
+
+        /* Touch-device: ensure adequate tap targets & always-visible file actions */
+        @media (pointer: coarse) {
+            .btn, .sidebar-item, .sidebar-client-item, .client-acc-header,
+            .sidebar-group-item, .view-btn, .ad-menu-item, .ad-tb-btn,
+            .file-item, .btn-connect, .btn-edit-mc, .btn-update-mc,
+            .browser-toolbar button, .tab { min-height: 44px; }
+            .toolbar .tab { padding: 10px 14px; }
+            .file-actions { opacity: 1 !important; }
+            .view-btn { min-width: 40px; }
+            /* Prevent hover-only states becoming stuck on touch */
+            .machine-card:hover { border-color: var(--border); box-shadow: none; }
+            .machine-card.offline:hover { border-color: var(--border); }
+        }
+
+        /* ── Telas médias (769–1024px): subheader pode ficar apertado com sidebar aberta ── */
+        @media (max-width: 1024px) {
+            .machines-subheader { flex-wrap:wrap; gap:8px; }
+            .machines-search { max-width:260px; }
+            .relay-status { display:none; }
+        }
+        @media (max-width: 900px) {
+            .machines-search { max-width:100%; order:10; flex:1 0 100%; }
+            .machines-stats { margin-left:0; }
+        }
+
+        /* ── Tablet & Phone (≤ 768px) ── */
+        @media (max-width: 768px) {
+
+            /* Show hamburger */
+            .btn-hamburger { display: flex; }
+
+            /* Sidebar: fixed overlay drawer */
+            .sidebar {
+                position: fixed !important;
+                top: 0; left: 0; bottom: 0;
+                z-index: 200;
+                transform: translateX(-100%);
+                transition: transform 0.28s cubic-bezier(.4,0,.2,1),
+                            width 0s, min-width 0s !important;
+                width: var(--sidebar-w) !important;
+                min-width: var(--sidebar-w) !important;
+                box-shadow: 4px 0 32px rgba(0,0,0,0.18);
+            }
+            .sidebar.mobile-open {
+                transform: translateX(0);
+            }
+            /* Collapsed class has no effect on mobile — drawer always full-width */
+            .sidebar.collapsed {
+                width: var(--sidebar-w) !important;
+                min-width: var(--sidebar-w) !important;
+            }
+            .sidebar.collapsed .sidebar-logo-text { opacity: 1; width: auto; overflow: visible; }
+            .sidebar.collapsed .sidebar-item-label { opacity: 1; width: auto; overflow: visible; }
+            .sidebar.collapsed .sidebar-cat { opacity: 1; height: auto; margin: initial; padding: 12px 10px 4px; overflow: visible; }
+            .sidebar.collapsed .acc-arrow { display: inline-flex; }
+            .sidebar.collapsed .sidebar-accordion-body { display: block; }
+            .sidebar.collapsed .sidebar-sep { margin: 6px 8px; }
+            .sidebar.collapsed .sidebar-sub { padding-left: 14px; }
+            .sidebar.collapsed #sidebarTooltip { display: none !important; }
+
+            /* Machines subheader wraps */
+            .machines-subheader {
+                flex-wrap: wrap;
+                gap: 8px;
+                padding: 10px 14px;
+            }
+            .machines-subheader h2 { font-size: 15px; }
+            .machines-search { max-width: 100%; order: 10; flex: 1 0 100%; }
+            .machines-stats { margin-left: 0; }
+            .relay-status { display: none; }
+
+            /* Machine grid: 2 cols on tablet */
+            .machines-grid { grid-template-columns: repeat(auto-fill, minmax(240px,1fr)); }
+            .machines-body { padding: 14px; }
+
+            /* Machine list view: fewer columns */
+            .machines-grid.list-view .mc-top { flex: 0 0 180px; }
+            .machines-grid.list-view .mc-detail:nth-child(n+3) { display: none; }
+
+            /* Toolbar: horizontally scrollable */
+            .toolbar {
+                overflow-x: auto;
+                flex-wrap: nowrap;
+                -webkit-overflow-scrolling: touch;
+                padding: 8px 12px;
+                gap: 5px;
+            }
+            .toolbar::-webkit-scrollbar { height: 0; }
+            .toolbar .tab { flex-shrink: 0; white-space: nowrap; }
+
+            /* Modals: responsive width */
+            .connect-prompt-box { width: min(calc(100vw - 32px), 380px); padding: 24px; }
+            .edit-modal-box     { width: min(calc(100vw - 32px), 360px); padding: 24px; }
+            .modal-box          { width: min(calc(100vw - 32px), 420px); padding: 24px; }
+            .auth-box           { width: min(calc(100vw - 32px), 400px); padding: 28px; }
+            .adm-modal          { width: min(calc(100vw - 32px), 560px); }
+            .ad-modal           { width: min(96vw, 520px); }
+
+            /* Tables: horizontal scroll */
+            .users-body, .admin-section { padding: 12px 14px; }
+            .data-table th, .data-table td { white-space: nowrap; }
+            .users-body > div { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+            .admin-section > .adm-table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+            /* Stats grid: 2 columns */
+            .stats-grid { grid-template-columns: repeat(2,1fr); gap: 10px; margin-bottom: 16px; }
+            .stat-card .value { font-size: 22px; }
+
+            /* SysInfo */
+            .sysinfo-grid { grid-template-columns: 1fr; }
+            .sysinfo-panel { padding: 12px 14px; }
+
+            /* File manager */
+            .file-item { padding: 10px 12px; }
+            .files-toolbar { flex-wrap: wrap; }
+
+            /* AD panel */
+            .ad-tree { width: 180px; min-width: 140px; }
+            .ad-breadcrumb { max-width: 180px; }
+            .ad-toolbar { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+            .ad-toolbar::-webkit-scrollbar { height: 0; }
+            .ad-menubar { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+            .ad-menubar::-webkit-scrollbar { height: 0; }
+
+            /* Users header */
+            .users-header { flex-wrap: wrap; gap: 8px; padding: 12px 16px; }
+        }
+
+        /* ── Phone (≤ 480px) ── */
+        @media (max-width: 480px) {
+            .header { padding: 0 10px; height: calc(48px + env(safe-area-inset-top, 0px)); }
+            .header .logo { font-size: 14px; }
+            .status { font-size: 11px; }
+            .header-user { font-size: 11px; gap: 6px; }
+            .btn-logout { padding: 3px 8px; font-size: 11px; }
+
+            /* Machine grid: 1 column */
+            .machines-grid { grid-template-columns: 1fr; gap: 10px; }
+            .machines-body { padding: 10px; }
+            .machine-card { padding: 14px; gap: 10px; }
+            .mc-icon { width: 38px; height: 38px; font-size: 18px; }
+            .mc-name { font-size: 14px; }
+
+            /* List view: no ≤480px converte para layout vertical (igual card view) */
+            .machines-grid.list-view .machine-card { flex-direction: column; gap: 10px; border-left-width: 1px !important; }
+            .machines-grid.list-view .mc-top { flex: none; width: 100%; }
+            .machines-grid.list-view .mc-badge { display: flex; }
+            .machines-grid.list-view .mc-divider { display: block; }
+            .machines-grid.list-view .mc-details { display: grid; grid-template-columns: 1fr 1fr; }
+            .machines-grid.list-view .mc-detail { flex-direction: column; padding: 0; border-left: none; }
+            .machines-grid.list-view .mc-detail:nth-child(n+2) { display: flex; }
+            .machines-grid.list-view .mc-update-bar { display: flex; }
+            .machines-grid.list-view .mc-footer-card { display: flex !important; }
+            .machines-grid.list-view .mc-footer-list { display: none !important; }
+            .machines-grid.list-view .mc-footer { padding-left: 0; border-left: none; justify-content: flex-end; }
+
+            /* Toolbar tabs */
+            .toolbar .tab { padding: 8px 10px; font-size: 12px; }
+
+            /* Modals: nearly full screen */
+            .connect-prompt-box, .edit-modal-box, .modal-box { width: calc(100vw - 20px); padding: 20px; }
+            .auth-box { width: calc(100vw - 20px); padding: 24px 20px; }
+
+            /* AD panel: collapse tree */
+            .ad-tree { display: none; }
+            .ad-resizer { display: none; }
+
+            /* Stats: 2 col compact */
+            .stats-grid { grid-template-columns: repeat(2,1fr); gap: 8px; }
+            .stat-card { padding: 12px; }
+            .stat-card .value { font-size: 20px; }
+
+            /* Admin section */
+            .admin-section { padding: 10px; }
+            .admin-section h2 { font-size: 16px; }
+
+            /* Users */
+            .users-header { padding: 10px 12px; }
+            .users-header h2 { font-size: 14px; }
+            .users-body { padding: 10px; }
+        }
+
+        /* ── iOS: prevent input zoom (font-size < 16px triggers autozoom) ── */
+        @supports (-webkit-touch-callout: none) {
+            input[type="text"],
+            input[type="email"],
+            input[type="password"],
+            input[type="search"],
+            select,
+            textarea { font-size: 16px !important; }
+            /* Re-apply compact size only for non-zooming contexts */
+            .ad-field input, .ad-field select, .ad-field textarea { font-size: 16px !important; }
+            /* Smooth momentum scrolling */
+            .file-list, .machines-body, .sysinfo-panel,
+            .users-body, .sidebar-nav, .toolbar,
+            .ad-list-container, .ad-tree { -webkit-overflow-scrolling: touch; }
+        }
     </style>
 </head>
 <body>
@@ -675,8 +938,11 @@
 
 <!-- Header -->
 <div class="header">
-    <div class="logo">RN<span>REMOTE</span></div>
-    <div style="display:flex;align-items:center;gap:16px;">
+    <div style="display:flex;align-items:center;gap:10px;">
+        <button class="btn-hamburger" id="btnHamburger" onclick="toggleMobileSidebar()" aria-label="Menu">&#9776;</button>
+        <div class="logo">RN<span>REMOTE</span></div>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;">
         <div class="status">
             <span id="statusText">Desconectado</span>
             <div class="status-dot" id="statusDot"></div>
@@ -687,6 +953,9 @@
         </div>
     </div>
 </div>
+
+<!-- Mobile sidebar backdrop -->
+<div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeMobileSidebar()"></div>
 
 <!-- campos ocultos usados pelo JS existente -->
 <input type="hidden" id="relayUrl" value="wss://rnremote.joaoneto.tec.br/ws">
@@ -751,14 +1020,15 @@
         <div class="sidebar-item sidebar-sub" data-section="groups" onclick="showSection('groups')">
             <span class="si-icon">&#128101;</span> <span class="sidebar-item-label">Grupos</span>
         </div>
-        <div class="sidebar-item sidebar-sub" data-section="general" onclick="showSection('general')">
-            <span class="si-icon">&#128196;</span> <span class="sidebar-item-label">Geral</span>
-        </div>
         <div class="sidebar-item sidebar-sub" data-section="users" onclick="showSection('users')">
             <span class="si-icon">&#128100;</span> <span class="sidebar-item-label">Usuários</span>
         </div>
         <div class="sidebar-item sidebar-sub" data-section="profiles" onclick="showSection('profiles')">
             <span class="si-icon">&#127959;</span> <span class="sidebar-item-label">Perfis</span>
+        </div>
+        <div class="sidebar-sep"></div>
+        <div class="sidebar-item sidebar-sub" id="sidebarAdminPanelLink" style="display:none;" onclick="openAdminPanel()">
+            <span class="si-icon">&#9881;</span> <span class="sidebar-item-label">Painel Admin</span>
         </div>
     </nav>
 </div>
@@ -808,7 +1078,7 @@
 <!-- Modal de edição de máquina -->
 <div class="edit-modal hidden" id="editModal">
     <div class="edit-modal-box">
-        <h3>&#9998; Editar Máquina</h3>
+        <h3>&#9999; Editar Máquina</h3>
         <input type="hidden" id="editAgentId">
         <div class="form-group">
             <label>Nome (apelido)</label>
@@ -1070,7 +1340,7 @@
         <div style="margin-bottom:12px"><div style="font-size:12px;color:var(--text-dim);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Script de remoção</div>
         <div style="display:flex;gap:8px;align-items:center"><code id="admUninstallCmdPfsense" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text);overflow-x:auto;white-space:nowrap">curl -fsSL https://rnremote.joaoneto.tec.br/static/agent/uninstall-pfsense.sh | sh</code>
         <button class="btn btn-sm btn-ghost" onclick="admCopyCmd('admUninstallCmdPfsense')">Copiar</button></div></div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap"><a href="/static/agent/agent-pfsense.py" download class="btn btn-sm btn-accent" style="text-decoration:none">&#8595; agent-pfsense.py</a><a href="/static/agent/install-pfsense.sh" download class="btn btn-sm btn-ghost" style="text-decoration:none">&#8595; install-pfsense.sh</a><a href="/static/agent/uninstall-pfsense.sh" download class="btn btn-sm btn-ghost" style="text-decoration:none">&#8595; uninstall-pfsense.sh</a></div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap"><a href="/api/agents/download/agent-pfsense.py" download class="btn btn-sm btn-accent" style="text-decoration:none">&#8595; agent-pfsense.py</a><a href="/static/agent/install-pfsense.sh" download class="btn btn-sm btn-ghost" style="text-decoration:none">&#8595; install-pfsense.sh</a><a href="/static/agent/uninstall-pfsense.sh" download class="btn btn-sm btn-ghost" style="text-decoration:none">&#8595; uninstall-pfsense.sh</a></div>
     </div>
 </div>
 
@@ -1277,7 +1547,6 @@
     <div class="modal-box">
         <h3 id="userModalTitle">Novo Usuário</h3>
         <input type="hidden" id="userModalId">
-        <input type="hidden" id="userModalRole" value="user">
         <div class="form-group">
             <label>E-mail</label>
             <input type="email" id="userModalEmail" placeholder="usuario@exemplo.com"
@@ -1762,7 +2031,7 @@
       </div>
     </div>
     <div class="ad-modal-footer">
-      <button class="ad-btn-danger ad-btn-sm" onclick="adDeleteGPOFromModal()" style="margin-right:auto">&#128465; Excluir GPO</button>
+      <button class="ad-btn-danger ad-btn-sm" onclick="adDeleteGPOFromModal()" style="margin-right:auto">&#10006; Excluir GPO</button>
       <button class="ad-btn-secondary" onclick="adCloseModal('adGPOModal')">Fechar</button>
     </div>
   </div>
@@ -2007,7 +2276,7 @@
       <div id="adSS-panel-custom" style="display:none;max-height:60vh;overflow-y:auto"></div>
     </div>
     <div class="ad-modal-footer">
-      <button class="ad-btn-danger ad-btn-sm" onclick="adDeleteShareConfirm()" style="margin-right:auto">&#128465; Excluir</button>
+      <button class="ad-btn-danger ad-btn-sm" onclick="adDeleteShareConfirm()" style="margin-right:auto">&#10006; Excluir</button>
       <button class="ad-btn-secondary" onclick="adCloseModal('adShareSettingsModal')">Cancelar</button>
       <button class="ad-btn-primary" onclick="adSaveShareSettings()">OK</button>
       <button class="ad-btn-secondary" onclick="adSaveShareSettings()">Aplicar</button>
@@ -2098,6 +2367,7 @@ let ws = null;
 let viewerId = null;
 let sessionId = null;
 let currentAgentId = null;
+let currentAgentIsPfsense = false;
 let isConnected = false;
 let frameCount = 0;
 let lastFpsUpdate = Date.now();
@@ -2115,7 +2385,7 @@ let latestAgentVersions = { linux: "", windows: "", pfsense: "" };
 function getLatestVersionForAgent(a) {
     const os = (a.os_type || '').toLowerCase();
     if (os === 'windows') return latestAgentVersions.windows;
-    if (os === 'freebsd') return latestAgentVersions.pfsense;
+    if (os === 'pfsense' || os === 'freebsd') return latestAgentVersions.pfsense;
     return latestAgentVersions.linux;
 }
 
@@ -2192,6 +2462,24 @@ function connectToAgent() {
     const agentId = document.getElementById('agentId').value.trim();
     const password = document.getElementById('agentPassword').value.trim();
     if (!agentId) return showError('ID do agente obrigatório');
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        showError('Reconectando ao servidor...');
+        viewerId = null;
+        connectToRelay();
+        // Aguarda auth_success (viewerId definido) antes de reenviar
+        const savedId = agentId, savedPass = password;
+        const wait = (n) => {
+            if (n <= 0) { showError('Falha ao reconectar. Tente novamente.'); return; }
+            setTimeout(() => {
+                if (ws && ws.readyState === WebSocket.OPEN && viewerId) {
+                    hideError();
+                    sendMessage('connect_request', { agent_id: savedId, password: savedPass });
+                } else { wait(n - 1); }
+            }, 500);
+        };
+        wait(20);
+        return;
+    }
     sendMessage('connect_request', { agent_id: agentId, password: password });
 }
 
@@ -2200,6 +2488,7 @@ function disconnect() {
         sendMessage('disconnect', { session_id: sessionId }, sessionId);
     }
     sessionId = null;
+    currentAgentIsPfsense = false;
     browserStarted = false;
     browserMode = null;
     browserPendingUrl = null;
@@ -2226,6 +2515,7 @@ function handleMessage(msg) {
         case 'connect_accept':
             sessionId = msg.data.session_id;
             currentAgentId = msg.data.agent_id;
+            currentAgentIsPfsense = ['freebsd','pfsense'].includes((msg.data.os_type || '').toLowerCase());
             // Recolhe sidebar ao conectar
             _sidebarWasCollapsed = document.getElementById('sidebar').classList.contains('collapsed');
             setSidebarCollapsed(true);
@@ -2239,14 +2529,30 @@ function handleMessage(msg) {
             // Detecta se é agente AD e ajusta a UI
             setTimeout(() => {
                 const agentInfo = allAgents.find(a => a.agent_id === currentAgentId);
-                const isAD = !!(agentInfo && agentInfo.ad_agent);
+                const isAD      = !!(agentInfo && agentInfo.ad_agent);
+                const isPfsense = currentAgentIsPfsense;
+
+                // Aba AD
                 const tabAD = document.getElementById('tabAD');
                 if (tabAD) tabAD.classList.toggle('visible', isAD);
+
+                // Abas exclusivas de desktop (ocultar no pfSense)
+                ['screen','console'].forEach(t => {
+                    const el = document.querySelector(`.tab[data-tab="${t}"]`);
+                    if (el) el.style.display = isPfsense ? 'none' : '';
+                });
+                // Aba browser só aparece no pfSense
+                const tabBrowser = document.querySelector('.tab[data-tab="browser"]');
+                if (tabBrowser) tabBrowser.style.display = isPfsense ? '' : 'none';
+
                 if (isAD) {
-                    // Para agentes AD: abre direto no painel AD
                     switchTab('ad');
+                } else if (isPfsense) {
+                    // pfSense: abre no terminal + sysinfo (sem screen_request)
+                    sendMessage('system_info_request', {}, sessionId);
+                    switchTab('terminal');
                 } else {
-                    // Para agentes normais: inicia tela + sysinfo
+                    // Agentes normais: inicia tela + sysinfo
                     sendMessage('screen_request', { action: 'start' }, sessionId);
                     sendMessage('system_info_request', {}, sessionId);
                 }
@@ -2312,6 +2618,10 @@ function handleMessage(msg) {
 
         case 'browser_status':
             handleBrowserStatus(msg.data);
+            break;
+
+        case 'update_agent_result':
+            handleUpdateAgentResult(msg.data);
             break;
 
         case 'ad_response':
@@ -2771,6 +3081,24 @@ function renderSystemInfo(data) {
         infoRow('Python',            escapeHtml(data.python_version || '')) +
     '</div>' +
 
+    // ── Card: Rede ──
+    (function() {
+        const ifaces = data.network_interfaces || [];
+        if (!ifaces.length) return '';
+        return '<div class="info-card">' +
+            '<div class="info-card-header"><span class="info-card-icon">&#127760;</span>' +
+            '<span class="info-card-title">Interfaces de Rede</span></div>' +
+            ifaces.map(function(n) {
+                return infoRow(
+                    escapeHtml(n.iface || ''),
+                    '<span style="font-family:monospace;font-size:12px">' +
+                    escapeHtml(n.ip || '') + '/' + escapeHtml(String(n.prefix || '')) +
+                    '</span>'
+                );
+            }).join('') +
+        '</div>';
+    })() +
+
     '</div>';
 
     const el = document.getElementById('sysinfoContent');
@@ -2911,14 +3239,15 @@ function renderCards(agents) {
     let html = '';
     for (const a of sorted) {
         const isAD   = !!(a.ad_agent);
-        const osIcon = isAD ? '🏘️' : (a.os_type === 'Windows' ? '🖥️' : a.os_type === 'Darwin' ? '🍎' : '🐧');
+        const _ost = (a.os_type || '').toLowerCase();
+        const osIcon = isAD ? '🏘️' : (_ost === 'windows' ? '🖥️' : _ost === 'darwin' ? '🍎' : (_ost === 'pfsense' || _ost === 'freebsd') ? '🔥' : '🐧');
         const name   = escapeHtml(a.nickname || a.hostname || a.agent_id);
         const online = a.is_online;
         const badge  = online
             ? (isAD ? '<span class="mc-badge" style="background:rgba(139,92,246,.15);color:#a78bfa">● AD</span>'
                     : '<span class="mc-badge badge-on">● Online</span>')
             : '<span class="mc-badge badge-off">Offline</span>';
-        const btnEdit = `<button class="btn-edit-mc" onclick="openEdit('${a.agent_id}','${name.replace(/'/g,"\\'")}')">&#9998; Editar</button>`;
+        const btnEdit = `<button class="btn-edit-mc" onclick="openEdit('${a.agent_id}','${name.replace(/'/g,"\\'")}')">&#9999; Editar</button>`;
         const agentVer = a.version || '';
         const latestVer = getLatestVersionForAgent(a);
         const needsUpdate = online && agentVer && latestVer && agentVer !== latestVer;
@@ -2956,7 +3285,7 @@ function renderCards(agents) {
             <div class="mc-details">
                 <div class="mc-detail">
                     <span class="mc-detail-label">Sistema</span>
-                    <span class="mc-detail-value">${escapeHtml(a.os_type||'—')} ${escapeHtml(a.os_version||'')}</span>
+                    <span class="mc-detail-value">${escapeHtml(fmtOsDisplay(a.os_type, a.os_version))}</span>
                 </div>
                 <div class="mc-detail">
                     <span class="mc-detail-label">Usuário</span>
@@ -3052,6 +3381,16 @@ function switchTab(tab) {
             initTerminal();
         } else {
             setTimeout(() => { fitAddon.fit(); term.focus(); }, 30);
+        }
+    } else if (tab === 'browser') {
+        // Auto-conecta ao pfSense — a URL correta vem do agente via browser_status.webgui_url
+        if (currentAgentIsPfsense && !browserStarted) {
+            sendMessage('browser_start', {
+                width: document.getElementById('browserView').clientWidth || 1280,
+                height: document.getElementById('browserView').clientHeight || 720,
+            }, sessionId);
+            browserStarted = true;
+            document.getElementById('browserStatusBar').textContent = 'Conectando ao pfSense...';
         }
     } else if (tab === 'console') {
         if (!vcterm) {
@@ -3235,12 +3574,40 @@ function updateAgent(agentId, btn) {
     if (!confirm('Enviar comando de atualização para esta máquina?\nO agente será reiniciado automaticamente.')) return;
     btn.classList.add('updating');
     btn.textContent = '⏳ Atualizando...';
+    btn.disabled = true;
     // Registra para exibir badge de sucesso quando o agente reconectar
     agentUpdateSuccess.set(agentId, null);
     sendMessage('update_agent', {
         agent_id:  agentId,
         panel_url: window.location.origin,
     });
+    // Timeout: se o agente não responder em 60s, restaura o botão
+    setTimeout(() => {
+        const b = document.getElementById('upd-' + agentId);
+        if (b && b.disabled) {
+            b.disabled = false;
+            b.classList.remove('updating');
+            b.textContent = '↑ Tentar novamente';
+        }
+    }, 60000);
+}
+
+function handleUpdateAgentResult(data) {
+    const agentId = data.agent_id;
+    const btn = document.getElementById('upd-' + agentId);
+    if (data.ok) {
+        // Sucesso: agente vai reiniciar — o badge será mostrado quando reconectar
+        if (btn) { btn.textContent = '⏳ Reiniciando...'; }
+    } else {
+        // Falha: mostra erro e restaura botão
+        alert('Falha ao atualizar agente:\n' + (data.message || 'Erro desconhecido'));
+        if (btn) {
+            btn.disabled = false;
+            btn.classList.remove('updating');
+            btn.textContent = '↑ Tentar novamente';
+        }
+        agentUpdateSuccess.delete(agentId);
+    }
 }
 
 // ─── Sidebar / Seções ───
@@ -3589,7 +3956,6 @@ async function saveUserModal() {
     const email  = document.getElementById('userModalEmail').value.trim();
     const name   = document.getElementById('userModalName').value.trim();
     const pass   = document.getElementById('userModalPass').value;
-    const role   = document.getElementById('userModalRole').value;
     const active = document.getElementById('userModalActive').checked;
     const errEl  = document.getElementById('userModalError');
     errEl.style.display = 'none';
@@ -3618,7 +3984,7 @@ async function saveUserModal() {
 
     const profileId = (profileWrap && profileWrap.style.display === 'none') ? undefined : document.getElementById('userModalProfile').value;
     const mfaEnabled = document.getElementById('userModalMfa').checked;
-    const body = { email, display_name: name, role, is_active: active, mfa_enabled: mfaEnabled };
+    const body = { email, display_name: name, is_active: active, mfa_enabled: mfaEnabled };
     if (profileId !== undefined) body.profile_id = profileId || null;
     if (pass) body.password = pass;
 
@@ -3680,6 +4046,26 @@ setInterval(() => {
         sendMessage('ping');
     }
 }, 15000);
+
+// Verifica versão do agente a cada 60s — detecta nova versão disponível sem recarregar a página
+setInterval(() => {
+    const token = localStorage.getItem('auth_token');
+    if (!token) return;
+    fetch('/api/agent/version', {headers:{'Authorization':'Bearer '+token}}).then(r => r.json()).then(d => {
+        const newLinux   = d.linux   || d.version || '';
+        const newWindows = d.windows || '';
+        const newPfsense = d.pfsense || '';
+        const changed = newLinux !== latestAgentVersions.linux ||
+                        newWindows !== latestAgentVersions.windows ||
+                        newPfsense !== latestAgentVersions.pfsense;
+        if (changed) {
+            latestAgentVersions.linux   = newLinux;
+            latestAgentVersions.windows = newWindows;
+            latestAgentVersions.pfsense = newPfsense;
+            renderAgentList(undefined); // re-renderiza para mostrar botão de atualização
+        }
+    }).catch(() => {});
+}, 60000);
 
 // ─── Autenticação Admin ───
 
@@ -3804,7 +4190,7 @@ function showAuthenticatedUI(userName) {
     loadClientSidebar();
     document.getElementById('sidebar').classList.remove('hidden');
     // Carrega versão mais recente do agente e nicknames
-    fetch('/api/agent/version').then(r => r.json()).then(d => {
+    fetch('/api/agent/version', {headers:{'Authorization':'Bearer '+(localStorage.getItem('auth_token')||'')}}).then(r => r.json()).then(d => {
         latestAgentVersions.linux   = d.linux   || d.version || '';
         latestAgentVersions.windows = d.windows || '';
         latestAgentVersions.pfsense = d.pfsense || '';
@@ -3912,7 +4298,7 @@ function browserGo() {
     } else {
         // Já iniciado — navega direto
         document.getElementById('browserStatusBar').textContent = 'Carregando: ' + url;
-        sendMessage('browser_navigate', { url: url, action: 'goto' }, sessionId);
+        sendMessage('browser_navigate', { url: url, method: 'GET', action: 'goto' }, sessionId);
     }
 }
 
@@ -3948,12 +4334,13 @@ function handleBrowserStatus(data) {
         browserMode = data.mode;
         document.getElementById('browserStatusBar').textContent =
             'Conectado (modo: ' + browserMode + ')';
-        // Navega para a URL pendente
-        if (browserPendingUrl) {
-            const url = browserPendingUrl;
-            browserPendingUrl = null;
-            document.getElementById('browserStatusBar').textContent = 'Carregando: ' + url;
-            sendMessage('browser_navigate', { url: url, action: 'goto' }, sessionId);
+        // Usa URL enviada pelo agente (lida do config.xml) ou URL pendente definida pelo usuário
+        const navUrl = data.webgui_url || browserPendingUrl;
+        browserPendingUrl = null;
+        if (navUrl) {
+            document.getElementById('browserUrl').value = navUrl;
+            document.getElementById('browserStatusBar').textContent = 'Carregando: ' + navUrl;
+            sendMessage('browser_navigate', { url: navUrl, method: 'GET', action: 'goto' }, sessionId);
         }
     } else if (status === 'navigated') {
         document.getElementById('browserStatusBar').textContent = data.title || data.url || '';
@@ -3997,10 +4384,21 @@ function handleBrowserHtml(data) {
             '<head$1><base href="' + baseUrl + '" target="_self">');
     }
     iframe.srcdoc = html;
-    document.getElementById('browserStatusBar').textContent =
-        (data.title || data.url || 'Carregado') + ' (' + (data.status || '') + ')';
+    const statusLabel = (data.title || data.url || 'Carregado') + (data.status ? ' (' + data.status + ')' : '');
+    document.getElementById('browserStatusBar').textContent = statusLabel;
     if (data.url) document.getElementById('browserUrl').value = data.url;
 }
+
+// Recebe navegação/formulário do iframe injetado e repassa ao agente
+window.addEventListener('message', (e) => {
+    if (!sessionId || browserMode !== 'proxy') return;
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type !== 'nav' || !msg.url) return;
+    document.getElementById('browserStatusBar').textContent = 'Carregando ' + msg.url + '…';
+    document.getElementById('browserUrl').value = msg.url;
+    sendMessage('browser_navigate', { url: msg.url, method: msg.method || 'GET', body: msg.body || null }, sessionId);
+});
 
 // Mouse no canvas do browser (modo headless)
 document.getElementById('browserCanvas').addEventListener('click', (e) => {
@@ -5330,7 +5728,7 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
                 '<td><select onchange="AD.gpoDrives[' + i + '].action=this.value">' +
                     ['U','C','R','D'].map(a => '<option value="' + a + '"' + (d.action===a?' selected':'') + '>' + {U:'Atualizar',C:'Criar',R:'Substituir',D:'Excluir'}[a] + '</option>').join('') +
                 '</select></td>' +
-                '<td><button class="ad-btn-danger ad-btn-sm" onclick="adRemoveGPODriveRow(' + i + ')">&#128465;</button></td>' +
+                '<td><button class="ad-btn-danger ad-btn-sm" onclick="adRemoveGPODriveRow(' + i + ')">&#10006;</button></td>' +
                 '</tr>';
         });
         el.innerHTML = html + '</tbody></table>';
@@ -5442,7 +5840,7 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
                 html += '<div style="display:flex;gap:4px;margin-bottom:4px;align-items:center">' +
                     '<input type="text" value="' + adXmlEsc(sc.cmdline) + '" placeholder="Caminho do script" style="flex:2;font-size:12px" oninput="AD.gpoScripts.' + type + '[' + i + '].cmdline=this.value">' +
                     '<input type="text" value="' + adXmlEsc(sc.params) + '" placeholder="Parâmetros" style="flex:1;font-size:12px" oninput="AD.gpoScripts.' + type + '[' + i + '].params=this.value">' +
-                    '<button class="ad-btn-danger ad-btn-sm" onclick="adRemoveGPOScript(\'' + type + '\',' + i + ')">&#128465;</button></div>';
+                    '<button class="ad-btn-danger ad-btn-sm" onclick="adRemoveGPOScript(\'' + type + '\',' + i + ')">&#10006;</button></div>';
             });
             el.innerHTML = html;
         });
@@ -5823,7 +6221,7 @@ document.getElementById('browserCanvas').addEventListener('wheel', (e) => {
                     '<td style="font-size:11px;color:var(--text-dim)">' + props + '</td>' +
                     '<td style="white-space:nowrap">' +
                         '<button class="ad-btn-secondary ad-btn-sm" onclick="adEditPrefItem(' + i + ')">Editar</button> ' +
-                        '<button class="ad-btn-danger ad-btn-sm" onclick="adDeletePrefItem(\'' + escapeHtml(item.uid).replace(/'/g,"\\'") + '\')">&#128465;</button>' +
+                        '<button class="ad-btn-danger ad-btn-sm" onclick="adDeletePrefItem(\'' + escapeHtml(item.uid).replace(/'/g,"\\'") + '\')">&#10006;</button>' +
                     '</td></tr>';
             });
             html += '</tbody></table>';
@@ -7529,7 +7927,14 @@ function admEscQ(s) { return String(s||'').replace(/'/g,"\\'"); }
 function admFmtBytes(b) { if(!b)return'0 B'; const k=1024,s=['B','KB','MB','GB'],i=Math.floor(Math.log(b)/Math.log(k)); return(b/Math.pow(k,i)).toFixed(1)+' '+s[i]; }
 function admFmtDate(d) { if(!d)return'-'; return new Date(d).toLocaleString('pt-BR'); }
 function admFmtDuration(s) { if(s<60)return s+'s'; if(s<3600)return Math.floor(s/60)+'m '+s%60+'s'; return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'; }
-function admOsIcon(os) { if(!os)return''; if(os==='FreeBSD')return'🔥 '; if(os==='Windows')return'🪟 '; if(os==='Linux')return'🐧 '; return''; }
+function fmtOsDisplay(os_type, os_version) {
+    if (!os_type) return '—';
+    const t = os_type.toLowerCase();
+    // Strip redundant OS name prefix from os_version (e.g. "FreeBSD FreeBSD 14.0" → "FreeBSD 14.0")
+    let ver = (os_version || '').replace(new RegExp('^' + os_type + '\\s+', 'i'), '').trim();
+    return os_type + (ver ? ' ' + ver : '');
+}
+function admOsIcon(os) { if(!os)return''; const t=os.toLowerCase(); if(t==='freebsd'||t==='pfsense')return'🔥 '; if(t==='windows')return'🪟 '; if(t==='linux')return'🐧 '; return''; }
 
 // Init color picker
 window.addEventListener('DOMContentLoaded', () => {
@@ -7582,17 +7987,27 @@ async function admLoadAgents() {
     const list = Array.isArray(a) ? a : (a.agents||[]);
     document.getElementById('admAgentsBody').innerHTML = list.map(x=>`<tr>
         <td><strong>${x.agent_id}</strong></td><td>${x.hostname}</td>
-        <td>${admOsIcon(x.os_type)}${x.os_type} ${x.os_version||''}</td>
+        <td>${admOsIcon(x.os_type)}${escapeHtml(fmtOsDisplay(x.os_type, x.os_version))}</td>
         <td>${x.username}</td><td>${x.ip_address}</td>
         <td><span class="adm-badge ${x.is_online?'adm-badge-online':'adm-badge-offline'}">${x.is_online?'Online':'Offline'}</span></td>
         <td>${admFmtDate(x.last_seen)}</td>
-        <td><button class="btn btn-sm btn-danger" onclick="admDeleteAgent('${x.agent_id}')">&#128465;</button></td>
+        <td><button class="btn btn-sm btn-danger" onclick="admDeleteAgent('${x.agent_id}')">&#10006;</button></td>
     </tr>`).join('') || '<tr><td colspan="8" style="color:var(--text-dim);padding:12px">Nenhum agente</td></tr>';
 }
 
 async function admDeleteAgent(id) {
-    if (!confirm(`Remover agente ${id}?`)) return;
-    await fetch(`/api/agents/${id}`, {method:'DELETE', headers:{'Authorization':'Bearer '+admGetToken()}});
+    if (!confirm(`Remover agente ${id}?\n\nSe o agente estiver online ele pode se re-registrar ao enviar o próximo heartbeat.`)) return;
+    try {
+        const res  = await fetch(`/api/agents/${id}`, {method:'DELETE', headers:{'Authorization':'Bearer '+admGetToken()}});
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok && !data.ok) {
+            alert('Erro ao excluir agente: ' + (data.error || res.status));
+            return;
+        }
+    } catch(e) {
+        alert('Erro de conexão ao excluir agente');
+        return;
+    }
     admLoadAgents();
 }
 
@@ -7611,7 +8026,7 @@ async function admLoadAgentPfsense() {
     try {
         const [vr, ar] = await Promise.all([fetch('/api/agent/version'), fetch('/api/agents', {headers:{'Authorization':'Bearer '+admGetToken()}})]);
         const v = await vr.json(); const agents = await ar.json(); const list = Array.isArray(agents)?agents:(agents.agents||[]);
-        const pf = list.filter(x=>x.os_type==='FreeBSD');
+        const pf = list.filter(x=>['FreeBSD','pfSense'].includes(x.os_type));
         document.getElementById('admAgentPfsenseCards').innerHTML = `
             <div class="stat-card"><div class="label">Versão Atual</div><div class="value" style="color:var(--accent);font-size:22px">v${v.pfsense||'?'}</div></div>
             <div class="stat-card"><div class="label">Agentes pfSense</div><div class="value">${pf.length}</div><div class="sub">${pf.filter(x=>x.is_online).length} online</div></div>`;
@@ -7722,7 +8137,7 @@ function loadUsers() { admLoadUsers(); }
 // ── Configurações Gerais ──────────────────────────────
 
 async function admLoadSettings() {
-    const s = await (await fetch('/api/settings')).json();
+    const s = await (await fetch('/api/settings', {headers:{'Authorization':'Bearer '+admGetToken()}})).json();
     const labels = {'max_agents':'Máx. Agentes','max_sessions_per_agent':'Máx. Sessões/Agente','session_timeout_minutes':'Timeout Sessão (min)','screen_default_quality':'Qualidade de Tela','screen_default_fps':'FPS Padrão','require_password':'Exigir Senha','allow_file_transfer':'Permitir Transferência de Arquivos','allow_shell':'Permitir Shell'};
     const smtpKeys = new Set(['smtp_host','smtp_port','smtp_user','smtp_pass','smtp_from','smtp_tls']);
     let h = '<h3 style="font-size:14px;margin:0 0 12px;color:var(--text-bright)">Geral</h3>';
@@ -7795,8 +8210,8 @@ async function admLoadGroups() {
         <td>${admFmtDate(g.created_at)}</td>
         <td style="display:flex;gap:6px">
             <button class="btn btn-sm btn-accent" onclick="admOpenGroupAgents(${g.id},'${admEscQ(g.name)}')">&#128101; Agentes</button>
-            <button class="btn btn-sm btn-warn" onclick="admOpenEditGroup(${g.id},'${admEscQ(g.name)}','${admEscQ(g.description||'')}','${g.color}',${!!g.alert_enabled},'${admEscQ(g.alert_message||'')}')">&#9998;</button>
-            <button class="btn btn-sm btn-danger" onclick="admRemoveGroup(${g.id},'${admEscQ(g.name)}')">&#128465;</button>
+            <button class="btn btn-sm btn-warn" onclick="admOpenEditGroup(${g.id},'${admEscQ(g.name)}','${admEscQ(g.description||'')}','${g.color}',${!!g.alert_enabled},'${admEscQ(g.alert_message||'')}')">&#9999;</button>
+            <button class="btn btn-sm btn-danger" onclick="admRemoveGroup(${g.id},'${admEscQ(g.name)}')">&#10006;</button>
         </td>
     </tr>`).join('') || '<tr><td colspan="6" style="color:var(--text-dim);padding:12px">Nenhum grupo criado</td></tr>';
 }
@@ -7937,7 +8352,7 @@ async function admRefreshGroupAgents() {
             <td><strong>${escapeHtml(a.nickname || a.hostname || a.agent_id)}</strong>${clientLabel ? `<br><span style="font-size:10px;color:var(--text-dim)">${escapeHtml(clientLabel)}</span>` : ''}</td>
             <td>${admOsIcon(a.os_type)}${a.os_type}</td>
             <td><span class="adm-badge ${a.is_online?'adm-badge-online':'adm-badge-offline'}">${a.is_online?'Online':'Offline'}</span></td>
-            <td><button class="btn btn-sm btn-danger" onclick="admRemoveAgentFromGroup('${a.agent_id}')">&#128465;</button></td>
+            <td><button class="btn btn-sm btn-danger" onclick="admRemoveAgentFromGroup('${a.agent_id}')">&#10006;</button></td>
         </tr>`;
     }).join('') || '<tr><td colspan="4" style="color:var(--text-dim);padding:12px">Nenhum agente neste grupo</td></tr>';
 }
@@ -7973,8 +8388,8 @@ async function admLoadClients() {
         <td>${admFmtDate(c.created_at)}</td>
         <td style="display:flex;gap:6px">
             <button class="btn btn-sm btn-accent" onclick="admOpenClientAgents(${c.id},'${admEscQ(c.name)}')">&#128187; Máquinas</button>
-            <button class="btn btn-sm btn-warn" onclick="admOpenEditClient(${c.id},'${admEscQ(c.name)}','${admEscQ(c.notes||'')}',${!!c.alert_enabled},'${admEscQ(c.alert_message||'')}')">&#9998;</button>
-            <button class="btn btn-sm btn-danger" onclick="admRemoveClient(${c.id},'${admEscQ(c.name)}')">&#128465;</button>
+            <button class="btn btn-sm btn-warn" onclick="admOpenEditClient(${c.id},'${admEscQ(c.name)}','${admEscQ(c.notes||'')}',${!!c.alert_enabled},'${admEscQ(c.alert_message||'')}')">&#9999;</button>
+            <button class="btn btn-sm btn-danger" onclick="admRemoveClient(${c.id},'${admEscQ(c.name)}')">&#10006;</button>
         </td>
     </tr>`).join('') || '<tr><td colspan="5" style="color:var(--text-dim);padding:12px">Nenhum cliente cadastrado</td></tr>';
 }
@@ -8060,7 +8475,7 @@ async function admRefreshClientAgents() {
         <td>${a.nickname&&a.nickname!==a.hostname?`${a.nickname} / ${a.hostname}`:a.hostname}</td>
         <td>${admOsIcon(a.os_type)}${a.os_type}</td>
         <td><span class="adm-badge ${a.is_online?'adm-badge-online':'adm-badge-offline'}">${a.is_online?'Online':'Offline'}</span></td>
-        <td><button class="btn btn-sm btn-danger" onclick="admRemoveAgentFromClient('${a.agent_id}')">&#128465;</button></td>
+        <td><button class="btn btn-sm btn-danger" onclick="admRemoveAgentFromClient('${a.agent_id}')">&#10006;</button></td>
     </tr>`).join('') || '<tr><td colspan="5" style="color:var(--text-dim);padding:12px">Nenhuma máquina vinculada</td></tr>';
 }
 
@@ -8122,8 +8537,8 @@ async function admLoadProfiles() {
         <td>${admFmtDate(p.created_at)}</td>
         <td style="display:flex;gap:6px">
             <button class="btn btn-sm btn-accent" onclick="admOpenPermissions(${p.id},'${admEscQ(p.name)}')">&#128274; Permissões</button>
-            <button class="btn btn-sm btn-warn" onclick="admOpenEditProfile(${p.id},'${admEscQ(p.name)}','${admEscQ(p.description||'')}')">&#9998;</button>
-            <button class="btn btn-sm btn-danger" onclick="admRemoveProfile(${p.id},'${admEscQ(p.name)}')">&#128465;</button>
+            <button class="btn btn-sm btn-warn" onclick="admOpenEditProfile(${p.id},'${admEscQ(p.name)}','${admEscQ(p.description||'')}')">&#9999;</button>
+            <button class="btn btn-sm btn-danger" onclick="admRemoveProfile(${p.id},'${admEscQ(p.name)}')">&#10006;</button>
         </td>
     </tr>`).join('') || '<tr><td colspan="5" style="color:var(--text-dim);padding:12px">Nenhum perfil cadastrado</td></tr>';
 }
@@ -8139,7 +8554,7 @@ async function admLoadProfilesForSelect(selectId, selectedId) {
             _admCachedProfiles = Array.isArray(profiles) ? profiles : [];
         } catch(e) { profiles = []; }
     }
-    sel.innerHTML = '<option value="">— Sem perfil (usa função) —</option>';
+    sel.innerHTML = '<option value="">— Selecione um perfil —</option>';
     profiles.forEach(p => {
         sel.innerHTML += `<option value="${p.id}" ${String(p.id)===String(selectedId)?'selected':''}>${escapeHtml(p.name)}</option>`;
     });
@@ -8239,10 +8654,26 @@ async function admSavePermissions() {
 
 // ── Aplica permissões na sidebar após login ───────────
 
+async function openAdminPanel() {
+    const token = localStorage.getItem('auth_token');
+    if (!token) return;
+    try {
+        const r = await fetch('/api/admin-access', { headers: { 'Authorization': 'Bearer ' + token } });
+        const d = await r.json();
+        if (d.ok && d.code) {
+            window.open('/admin?code=' + encodeURIComponent(d.code), '_blank');
+        }
+    } catch(e) { console.error('Erro ao abrir painel admin:', e); }
+}
+
 function admApplyPermissions(permissions) {
     if (!permissions) return;
-    // superadmin: tudo visível
-    if (permissions['*'] === true) return;
+    // master: tudo visível
+    const adminLink = document.getElementById('sidebarAdminPanelLink');
+    if (permissions['*'] === true) {
+        if (adminLink) adminLink.style.display = '';
+        return;
+    }
 
     const moduleToSection = {
         'machines': 'machines', 'dashboard': 'dashboard', 'clients': 'clients',
@@ -8333,6 +8764,77 @@ function _afterSidebarResize() {
     }
 })();
 
+// ── Mobile Sidebar Drawer ─────────────────────────────
+function _isMobileViewport() {
+    return window.innerWidth <= 768;
+}
+
+function openMobileSidebar() {
+    const sb = document.getElementById('sidebar');
+    const bd = document.getElementById('sidebarBackdrop');
+    if (sb) sb.classList.add('mobile-open');
+    if (bd) bd.classList.add('visible');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeMobileSidebar() {
+    const sb = document.getElementById('sidebar');
+    const bd = document.getElementById('sidebarBackdrop');
+    if (sb) sb.classList.remove('mobile-open');
+    if (bd) bd.classList.remove('visible');
+    document.body.style.overflow = '';
+}
+
+function toggleMobileSidebar() {
+    const sb = document.getElementById('sidebar');
+    if (sb && sb.classList.contains('mobile-open')) {
+        closeMobileSidebar();
+    } else {
+        openMobileSidebar();
+    }
+}
+
+// Close mobile drawer on nav item clicks
+(function() {
+    function _closeMobileOnNav() {
+        if (_isMobileViewport()) closeMobileSidebar();
+    }
+    document.addEventListener('click', function(e) {
+        if (!_isMobileViewport()) return;
+        const item = e.target.closest(
+            '.sidebar-item[data-section], .sidebar-client-item, ' +
+            '.client-acc-header, .sidebar-group-item'
+        );
+        if (item) {
+            // Accordion toggles should NOT close the drawer
+            const isAccordion = item.classList.contains('sidebar-accordion-toggle');
+            if (!isAccordion) setTimeout(closeMobileSidebar, 120);
+        }
+    });
+    // Close on Escape
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeMobileSidebar();
+    });
+    // On resize back to desktop: cleanup mobile state
+    window.addEventListener('resize', function() {
+        if (!_isMobileViewport()) {
+            closeMobileSidebar();
+            document.body.style.overflow = '';
+        }
+    });
+})();
+
+// Override setSidebarCollapsed to skip on mobile (drawer logic takes over)
+const _origSetSidebarCollapsed = setSidebarCollapsed;
+setSidebarCollapsed = function(collapse) {
+    if (_isMobileViewport()) {
+        // On mobile: collapse=true means close drawer, false means open
+        if (collapse) closeMobileSidebar(); else openMobileSidebar();
+        return;
+    }
+    _origSetSidebarCollapsed(collapse);
+};
+
 // Tooltip para sidebar retraído
 (function() {
     const tip = document.createElement('div');
@@ -8381,6 +8883,43 @@ function _afterSidebarResize() {
         if (item && item.contains(e.relatedTarget)) return;
         clearTip();
     });
+})();
+
+// ── iOS: adjust connect-prompt above keyboard via visualViewport ──────────────
+(function() {
+    const prompt = document.getElementById('connectPrompt');
+    if (!prompt || !window.visualViewport) return;
+
+    function adjustPrompt() {
+        if (prompt.classList.contains('hidden')) return;
+        const vv = window.visualViewport;
+        prompt.style.top    = vv.offsetTop + 'px';
+        prompt.style.height = vv.height + 'px';
+        prompt.style.bottom = 'auto';
+    }
+
+    function resetPrompt() {
+        prompt.style.top    = '';
+        prompt.style.height = '';
+        prompt.style.bottom = '';
+    }
+
+    window.visualViewport.addEventListener('resize',  adjustPrompt);
+    window.visualViewport.addEventListener('scroll',  adjustPrompt);
+
+    // Reset ao fechar o prompt
+    const _closeOrig = window.closeConnectPrompt;
+    window.closeConnectPrompt = function() {
+        resetPrompt();
+        if (typeof _closeOrig === 'function') _closeOrig();
+    };
+
+    // Ajusta ao abrir
+    const _openOrig = window._doOpenConnectPrompt;
+    window._doOpenConnectPrompt = function(agentId, name) {
+        if (typeof _openOrig === 'function') _openOrig(agentId, name);
+        requestAnimationFrame(adjustPrompt);
+    };
 })();
 </script>
 </body>

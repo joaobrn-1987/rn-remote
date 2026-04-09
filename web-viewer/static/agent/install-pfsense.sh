@@ -201,8 +201,8 @@ fi
 step "4/5" "Baixando agente..."
 
 mkdir -p "$AGENT_DIR"
-fetch -q -o "$AGENT_BIN" "${PANEL_URL}/static/agent/agent-pfsense.py" 2>/dev/null || \
-    $PYTHON -c "import urllib.request; urllib.request.urlretrieve('${PANEL_URL}/static/agent/agent-pfsense.py', '${AGENT_BIN}')" || \
+fetch -q -o "$AGENT_BIN" --header "Authorization: Bearer ${TOKEN}" "${PANEL_URL}/api/agents/download/agent-pfsense.py" 2>/dev/null || \
+    $PYTHON -c "import urllib.request; req=urllib.request.Request('${PANEL_URL}/api/agents/download/agent-pfsense.py',headers={'Authorization':'Bearer ${TOKEN}'}); open('${AGENT_BIN}','wb').write(urllib.request.urlopen(req).read())" || \
     err "Falha ao baixar o agente."
 chmod 750 "$AGENT_BIN"
 ok "Agente salvo em $AGENT_BIN"
@@ -228,7 +228,7 @@ logfile="/var/log/rnremote.log"
 
 # Usa /usr/sbin/daemon para daemonizar o processo Python
 command="/usr/sbin/daemon"
-command_args="-p \${pidfile} -o \${logfile} ${PYTHON_ABS} ${AGENT_BIN} --config ${CONFIG_FILE}"
+command_args="-r -p \${pidfile} -o \${logfile} ${PYTHON_ABS} ${AGENT_BIN} --config ${CONFIG_FILE}"
 
 load_rc_config \$name
 : \${rnremote_agent_enable:="NO"}
@@ -238,6 +238,10 @@ RCEOF
 
 chmod 555 "$RC_SCRIPT"
 
+# pfSense regenera /etc/rc.conf a cada boot — usar /etc/rc.conf.local que não é sobrescrito
+grep -q "rnremote_agent_enable" /etc/rc.conf.local 2>/dev/null || \
+    echo 'rnremote_agent_enable="YES"' >> /etc/rc.conf.local
+# Garante que rc.conf.local é carregado (já é padrão no FreeBSD, mas não custa)
 grep -q "rnremote_agent_enable" /etc/rc.conf 2>/dev/null || \
     echo 'rnremote_agent_enable="YES"' >> /etc/rc.conf
 
@@ -255,7 +259,7 @@ if [ -f "/var/run/rnremote_agent.pid" ] && kill -0 "$(cat /var/run/rnremote_agen
     ok "Serviço rodando (PID $(cat /var/run/rnremote_agent.pid))"
 else
     warn "Serviço não iniciou via rc.d. Iniciando diretamente..."
-    /usr/sbin/daemon -p /var/run/rnremote_agent.pid -o /var/log/rnremote.log \
+    /usr/sbin/daemon -r -p /var/run/rnremote_agent.pid -o /var/log/rnremote.log \
         "$PYTHON_ABS" "$AGENT_BIN" --config "$CONFIG_FILE"
     sleep 1
     if [ -f "/var/run/rnremote_agent.pid" ] && kill -0 "$(cat /var/run/rnremote_agent.pid 2>/dev/null)" 2>/dev/null; then
